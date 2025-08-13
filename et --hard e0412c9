@@ -1,0 +1,13 @@
+[33m7961507[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m)[m HEAD@{0}: reset: moving to 7961507
+[33m7961507[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m)[m HEAD@{1}: reset: moving to HEAD~2
+[33me0412c9[m HEAD@{2}: commit: עדכון
+[33m0432ed7[m HEAD@{3}: reset: moving to HEAD~4
+[33m6ad94a8[m HEAD@{4}: reset: moving to HEAD
+[33m6ad94a8[m HEAD@{5}: commit: shimmeh
+[33mf8fc644[m HEAD@{6}: commit: Remove secrets from backend/.env and add to .gitignore
+[33m58cdee2[m HEAD@{7}: commit: Remove secrets from backend/.env and add to .gitignore
+[33mc4c8931[m HEAD@{8}: commit: Remove secrets from backend/.env and add to .gitignore
+[33m0432ed7[m HEAD@{9}: checkout: moving from main to main
+[33m0432ed7[m HEAD@{10}: commit: comm2
+[33m7961507[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m)[m HEAD@{11}: commit: shimmeh
+[33mbf741a8[m HEAD@{12}: commit (initial): initial commit
