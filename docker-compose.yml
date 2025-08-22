@@ -39,5 +39,20 @@ services:
     environment:
       DATABASE_URL: postgresql://admin:1234@db:5432/fantasy
 
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: dockerfile
+    container_name: frontend
+    restart: always
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      VITE_API_URL: http://backend:8000
 volumes:
   postgres_data:
