@@ -1,6 +1,9 @@
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime
 from sqlalchemy.orm import relationship
 from .database import Base
+from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
+
+PickEnum = PG_ENUM('home', 'away', name='pick_enum', create_type=False)
 
 
 class User(Base):
@@ -33,16 +36,37 @@ class Match(Base):
     last_update = Column(DateTime, nullable=True)
     source = Column(String, nullable=True) 
 
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, Enum, ForeignKey, UniqueConstraint, CheckConstraint
+from sqlalchemy.orm import relationship
+import datetime as dt
+
+# אם עדיין אין לך ENUM לשימוש, נייצר אחד מקומי:
+from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
+
+PickEnum = PG_ENUM('home', 'away', name='pick_enum', create_type=False)
+
 class Prediction(Base):
     __tablename__ = "predictions"
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
-    match_id = Column(Integer, ForeignKey("matches.id"))
-    predicted_winner = Column(String)
-    predicted_diff = Column(Integer)
 
-    user = relationship("User")
-    match = relationship("Match")
+    id = Column(Integer, primary_key=True, index=True)
+    match_id = Column(Integer, ForeignKey("matches.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(String, nullable=False, index=True)  
+    pick = Column(PickEnum, nullable=True)  
+    margin = Column(Integer, nullable=True)
+    points_awarded = Column(Integer, nullable=False, default=0)
+    is_final = Column(Boolean, nullable=False, default=False)  # האם הניקוד נסגר
+    created_at = Column(DateTime, nullable=False, default=dt.datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow)
+
+    match = relationship("Match", backref="predictions")
+
+    __table_args__ = (
+        UniqueConstraint("match_id", "user_id", name="uq_prediction_user_match"),
+        CheckConstraint('margin >= 0', name="ck_margin_non_positive")
+    )
+    
+    
+    
 class TestUser(Base):
     __tablename__ = "test_users"
 

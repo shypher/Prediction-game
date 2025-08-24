@@ -1,4 +1,17 @@
 backend/.env
+
+__pycache__/
+*.pyc
+*.pyo
+
+.venv/
+venv/
+ENV/
+env/
+# Alembic
+alembic/versions/*.pyc
+alembic/__pycache__/
+
 # Logs
 frontend/.logs
 frontend/.*.log
@@ -22,3 +35,20 @@ frontend/.*.ntvs*
 frontend/.*.njsproj
 frontend/.*.sln
 frontend/.*.sw?
+backend/requirements.txt
+.gitignore
+backend/alembic/script.py.mako
+backend/app/__pycache__/__init__.cpython-311.pyc
+backend/app/__pycache__/auth.cpython-311.pyc
+backend/app/__pycache__/database.cpython-311.pyc
+backend/app/__pycache__/getGames.cpython-311.pyc
+backend/app/__pycache__/main.cpython-311.pyc
+backend/app/__pycache__/models.cpython-311.pyc
+backend/app/__pycache__/schemas.cpython-311.pyc
+backend/app/services/__pycache__/__init__.cpython-311.pyc
+backend/app/services/__pycache__/balldontlie.cpython-311.pyc
+backend/app/services/__pycache__/euroleague_open.cpython-311.pyc
+backend/app/services/__pycache__/thesportsdb.cpython-311.pyc
+backend/app/utils/__pycache__/__init__.cpython-311.pyc
+backend/app/utils/__pycache__/db_upsert.cpython-311.pyc
+backend/app/utils/__pycache__/migrations.cpython-311.pyc

@@ -86,7 +86,6 @@ def upcoming(
             db.commit()
 
     elif league == "EuroBasket":
-        # TSDB לפי עונה 2025 (טורניר) + סינון חלון
         season_str = thesportsdb.tsdb_season_for_eurobasket(now.date())
         events = thesportsdb.events_season_by_league("EuroBasket", season_str)
         rows = []
@@ -94,7 +93,6 @@ def upcoming(
             r = thesportsdb.map_event_to_row(ev, "EuroBasket")
             if r["match_date"] and now <= r["match_date"] <= end:
                 rows.append(r)
-        # אם עדיין אין (לפעמים TSDB לא עודכן) – אפשר להוסיף פה fallback של FIBA HTML/ICS
 
     elif league == "Israel Super League":
         season_str = thesportsdb.tsdb_season_for_israel(now.date())
@@ -133,23 +131,19 @@ def upcoming(
     
 @router.get("/_probe_tsdb")
 def probe_tsdb(league: str, days: int = 30):
-    """
-    Probe ל-TheSportsDB: מחזיר כמה אירועים בעונת TSDB מתאימים לחלון now..now+days.
-    """
+
     now_dt = dt.datetime.utcnow()
     end_dt = now_dt + dt.timedelta(days=days)
 
-    # קבע עונת TSDB לפי הליגה
     if league == "EuroLeague":
-        season = thesportsdb.tsdb_season_for_euroleague(now_dt.date())  # למשל "2025-2026"
+        season = thesportsdb.tsdb_season_for_euroleague(now_dt.date())  
     elif league == "Israel Super League":
-        season = thesportsdb.tsdb_season_for_israel(now_dt.date())      # למשל "2025-2026"
+        season = thesportsdb.tsdb_season_for_israel(now_dt.date())     
     elif league == "EuroBasket":
-        season = thesportsdb.tsdb_season_for_eurobasket(now_dt.date())  # "2025"
+        season = thesportsdb.tsdb_season_for_eurobasket(now_dt.date())  
     else:
         raise HTTPException(400, "league must be EuroLeague | EuroBasket | Israel Super League")
 
-    # משוך אירועי עונה ובדוק מה נופל בחלון
     events = thesportsdb.events_season_by_league(league, season)
     filtered = []
     for ev in events:

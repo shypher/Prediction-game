@@ -1,4 +1,7 @@
 from pydantic import BaseModel, EmailStr
+import datetime as dt
+from typing import Optional, Literal
+
 
 class UserCreate(BaseModel):
     username: str
@@ -36,3 +39,20 @@ class NextGameOut(BaseModel):
 
     class Config:
         orm_mode = True  # Pydantic v1 compatible
+        
+class PredictionOut(BaseModel):
+    id: int
+    match_id: int
+    user_id: str
+    pick: Optional[Literal["home", "away"]]
+    margin: Optional[int]
+    points_awarded: int
+    is_final: bool
+    created_at: dt.datetime
+    updated_at: dt.datetime
+
+    class Config:
+        orm_mode = True
+        
+class PredictionCreate(PredictionBase):
+    match_id: int
