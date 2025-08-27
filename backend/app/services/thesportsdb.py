@@ -16,7 +16,6 @@ def _get(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
     r.raise_for_status()
     return r.json()
 
-# (נשאיר את next_events_by_league למקרי קצה, אבל הוא יחזיר ברוב המקרים רק 1 בחינם)
 def next_events_by_league(league_name: str, limit: int = 20) -> List[Dict[str, Any]]:
     lid = LEAGUE_IDS.get(league_name)
     if not lid:
@@ -26,7 +25,6 @@ def next_events_by_league(league_name: str, limit: int = 20) -> List[Dict[str, A
     return events[:limit]
 
 def events_season_by_league(league_name: str, season: str) -> List[Dict[str, Any]]:
-    """מחזיר את אירועי העונה (הרבה יותר טוב מ-nextleague; בחינם מוגבל ~100 פריטים שזה מצוין לביורובאסקט)."""
     lid = LEAGUE_IDS.get(league_name)
     if not lid:
         return []
@@ -42,7 +40,6 @@ def tsdb_season_for_israel(d: dt.date) -> str:
     return f"{y}-{y+1}"
 
 def tsdb_season_for_eurobasket(_: dt.date) -> str:
-    # טורניר לפי שנה קלנדרית
     return "2025"
 
 def _to_utc_naive(ts: Optional[str], date_local: Optional[str], time_local: Optional[str]) -> Optional[dt.datetime]:
@@ -60,10 +57,19 @@ def _to_utc_naive(ts: Optional[str], date_local: Optional[str], time_local: Opti
             return None
     return None
 
+
+EUROBASKET_UTC_OFFSET = int(os.getenv("EUROBASKET_UTC_OFFSET", "-3")) 
 def map_event_to_row(ev: Dict[str, Any], league_name: str) -> Dict[str, Any]:
-    when = _to_utc_naive(ev.get("strTimestamp"), ev.get("dateEvent"), ev.get("strTime"))
+    when = _to_utc_naive(ev.get("strTimestamp"), ev.get("dateEvent"), ev.get("strTime"))+dt.timedelta(hours=EUROBASKET_UTC_OFFSET)
     ext = ev.get("idEvent")
     external_id = f"tsdb_{ext}" if ext else None
+    status_raw = (ev.get("strStatus") or "").strip().lower()
+    if status_raw in ["ft", "full time", "finished", "match finished"]:
+        status = "finished"
+    elif status_raw in ["in progress", "live", "playing"]:
+        status = "in_progress"
+    else:
+        status = "scheduled"
     return {
         "external_id": external_id,
         "home_team": ev.get("strHomeTeam"),
@@ -71,7 +77,7 @@ def map_event_to_row(ev: Dict[str, Any], league_name: str) -> Dict[str, Any]:
         "match_date": when,
         "home_score": None,
         "away_score": None,
-        "status": "scheduled",
+        "status": status,
         "league_id": 0,
         "league_name": league_name,
         "country": ev.get("strCountry"),

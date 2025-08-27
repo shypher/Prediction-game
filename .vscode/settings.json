@@ -1,5 +1,9 @@
 {
     "cSpell.words": [
         "dotenv"
+    ],
+    "python.REPL.enableREPLSmartSend": false,
+    "python.analysis.extraPaths": [
+        "./backend/app"
     ]
 }

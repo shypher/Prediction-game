@@ -4,15 +4,15 @@ from fastapi import Depends, HTTPException, APIRouter
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from starlette import status
-from .models import User
+from ..models import User
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 import os
-from .database import SessionLocal
+from ..database import SessionLocal
 from authlib.integrations.starlette_client import OAuth
 from starlette.responses import RedirectResponse
 from dotenv import load_dotenv
-from . import models, database
+from .. import models, database
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from app.database import get_user_by_email, create_user
 import httpx

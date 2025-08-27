@@ -2,12 +2,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import Optional, List
 import datetime as dt
-from . import models, database
-from .services import balldontlie, euroleague_open, thesportsdb
-from .schemas import NextGameOut
+from .. import models, database
+from ..services import balldontlie, euroleague_open, thesportsdb
+from ..schemas import NextGameOut
 router = APIRouter(prefix="/games", tags=["games"])
 from sqlalchemy import text
-from .utils.db_upsert import bulk_upsert_by_external_id
+from ..utils.db_upsert import bulk_upsert_by_external_id
 
 
 LEAGUE_RESOLVER = {
