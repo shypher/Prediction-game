@@ -3,31 +3,26 @@ from sqlalchemy.orm import Session
 from typing import Optional, List
 import datetime as dt
 import os
-from app import models, schemas, database
+from app import database
 from sqlalchemy import text
 from statistics import median
 from sqlalchemy import func, case, text
 from sqlalchemy.exc import IntegrityError
+
+from ..db import models, schemas
 from .auth import get_current_user
+from ..constants import HTTPStatus, ErrorMessages, AppConstants
+from ..services.prediction_service import PredictionService
 
 router = APIRouter(prefix="/predictions", tags=["predictions"])
 
 
 def require_admin(me: dict = Depends(get_current_user)):
-    
-    if get_current_user:
-        u = me["id"]
-        is_admin = False
-        if isinstance(u, dict):
-            is_admin = u.get("is_admin") or (u.get("role") == "admin")
-        else:
-            is_admin = getattr(u, "is_admin", False) or (getattr(u, "role", None) == "admin")
-        if is_admin:
-            return True
-    expected = os.getenv("ADMIN_TOKEN")
-    if expected and x_admin_token and x_admin_token == expected:
-        return True
-    raise HTTPException(403, "Admin privileges required")
+    user_id = str(me["id"])
+    admins = set((os.getenv("ADMIN_USERS") or "").split(","))
+    if user_id in admins:
+        return user_id
+    raise HTTPException(HTTPStatus.FORBIDDEN, ErrorMessages.ADMIN_PRIVILEGES_REQUIRED)
 
 
 def get_db():
@@ -42,14 +37,7 @@ def get_db():
 #         raise HTTPException(401, "Unauthorized: provide X-User-Id for now")
 #     return x_user_id
 
-LOCK_MINUTES = 1  # minutes before match start
 
-def is_locked(match: models.Match) -> bool:
-    if not match or not match.match_date:
-        return False
-    now = dt.datetime.utcnow()
-    lock_time = match.match_date - dt.timedelta(minutes=LOCK_MINUTES)
-    return now >= lock_time
 
 
 
@@ -60,62 +48,29 @@ def create_or_update_prediction(
     me: dict = Depends(get_current_user), 
 ):
     uid = me["id"]
-
-    m = db.get(models.Match, payload.match_id)
-    if not m:
-        raise HTTPException(404, "Match not found")
-    if is_locked(m):
-        raise HTTPException(403, "Predictions are locked for this match")
-
-    if payload.margin is None or payload.margin < 0:
-        raise HTTPException(422, "margin must be >= 0")
-
-    if payload.margin == 0:
-        eff_margin, eff_pick = 0, None
-    else:
-        if payload.pick is None:
-            raise HTTPException(422, "pick is required when margin>=1")
-        eff_margin, eff_pick = payload.margin, payload.pick
-
-    pred = (
-        db.query(models.Prediction)
-        .filter(models.Prediction.match_id == payload.match_id,
-                models.Prediction.user_id == uid)
-        .one_or_none()
-    )
-
-    if pred is None:
-        pred = models.Prediction(
-            match_id=payload.match_id,
-            user_id=uid,              
-            pick=eff_pick,
-            margin=eff_margin,
-        )
-        db.add(pred)
-    else:
-        if pred.is_final:
-            raise HTTPException(409, "Prediction already settled")
-        pred.pick = eff_pick
-        pred.margin = eff_margin
-
+    prediction_service = PredictionService(db)
+    
     try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        pred = (
-            db.query(models.Prediction)
-            .filter(models.Prediction.match_id == payload.match_id,
-                    models.Prediction.user_id == uid)
-            .one()
+        result = prediction_service.create_prediction(
+            user_id=uid,
+            match_id=payload.match_id,
+            pick=payload.pick,
+            margin=payload.margin
         )
-        if pred.is_final:
-            raise HTTPException(409, "Prediction already settled")
-        pred.pick = eff_pick
-        pred.margin = eff_margin
-        db.commit()
-
-    db.refresh(pred)
-    return pred
+        return result
+    except ValueError as e:
+        if "Match not found" in str(e):
+            raise HTTPException(HTTPStatus.NOT_FOUND, ErrorMessages.MATCH_NOT_FOUND)
+        elif "Predictions are locked" in str(e):
+            raise HTTPException(HTTPStatus.FORBIDDEN, ErrorMessages.PREDICTIONS_LOCKED)
+        elif "margin must be >= 0" in str(e):
+            raise HTTPException(HTTPStatus.UNPROCESSABLE_ENTITY, "margin must be >= 0")
+        elif "pick is required when margin>=1" in str(e):
+            raise HTTPException(HTTPStatus.UNPROCESSABLE_ENTITY, "pick is required when margin>=1")
+        elif "Prediction already settled" in str(e):
+            raise HTTPException(HTTPStatus.CONFLICT, ErrorMessages.PREDICTION_ALREADY_SETTLED)
+        else:
+            raise HTTPException(HTTPStatus.BAD_REQUEST, str(e))
 
 
 @router.patch("/{prediction_id}", response_model=schemas.PredictionOut)
@@ -126,40 +81,39 @@ def update_prediction(
     me: dict = Depends(get_current_user),
 ):
     uid = me["id"]
-
-    pred = db.get(models.Prediction, prediction_id)
-    if not pred:
-        raise HTTPException(404, "Prediction not found")
-    if str(pred.user_id).strip() != uid:  
-        raise HTTPException(403, "You can only edit your own predictions")
-
-    m = db.get(models.Match, pred.match_id)
-    if is_locked(m):
-        raise HTTPException(403, "Predictions are locked for this match")
-    if pred.is_final:
-        raise HTTPException(409, "Prediction already settled")
-
-    if payload.margin is not None and payload.margin < 0:
-        raise HTTPException(422, "margin must be >= 0")
-
-    if payload.margin is not None:
-        if payload.margin == 0:
-            pred.margin = 0
-            pred.pick = None
+    prediction_service = PredictionService(db)
+    
+    try:
+        # Get the prediction first to validate ownership
+        pred = db.get(models.Prediction, prediction_id)
+        if not pred:
+            raise HTTPException(HTTPStatus.NOT_FOUND, ErrorMessages.PREDICTION_NOT_FOUND)
+        if str(pred.user_id).strip() != uid:
+            raise HTTPException(HTTPStatus.FORBIDDEN, ErrorMessages.OWN_PREDICTIONS_ONLY)
+        
+        # Update the prediction
+        result = prediction_service.update_prediction(
+            user_id=uid,
+            match_id=pred.match_id,
+            pick=payload.pick,
+            margin=payload.margin or pred.margin
+        )
+        return result
+    except ValueError as e:
+        if "Prediction not found" in str(e):
+            raise HTTPException(HTTPStatus.NOT_FOUND, ErrorMessages.PREDICTION_NOT_FOUND)
+        elif "Predictions are locked" in str(e):
+            raise HTTPException(HTTPStatus.FORBIDDEN, ErrorMessages.PREDICTIONS_LOCKED)
+        elif "Prediction already settled" in str(e):
+            raise HTTPException(HTTPStatus.CONFLICT, ErrorMessages.PREDICTION_ALREADY_SETTLED)
+        elif "margin must be >= 0" in str(e):
+            raise HTTPException(HTTPStatus.UNPROCESSABLE_ENTITY, "margin must be >= 0")
+        elif "pick is required when margin>=1" in str(e):
+            raise HTTPException(HTTPStatus.UNPROCESSABLE_ENTITY, "pick is required when margin>=1")
+        elif "Cannot set pick when margin=0" in str(e):
+            raise HTTPException(HTTPStatus.UNPROCESSABLE_ENTITY, "Cannot set pick when margin=0. Set margin>=1 first.")
         else:
-            pred.margin = payload.margin
-            if payload.pick is not None:
-                pred.pick = payload.pick
-            elif pred.pick is None:
-                raise HTTPException(422, "pick is required when margin>=1")
-    elif payload.pick is not None:
-        if pred.margin == 0:
-            raise HTTPException(422, "Cannot set pick when margin=0. Set margin>=1 first.")
-        pred.pick = payload.pick
-
-    db.commit()
-    db.refresh(pred)
-    return pred
+            raise HTTPException(HTTPStatus.BAD_REQUEST, str(e))
 
 @router.get("/my", response_model=List[schemas.PredictionOut])
 def my_predictions(
@@ -182,16 +136,11 @@ def get_my_prediction(
     me: dict = Depends(get_current_user),
 ):
     user_id = me["id"]
-    pred = (
-        db.query(models.Prediction)
-        .filter(
-            models.Prediction.match_id == match_id,
-            models.Prediction.user_id == user_id,
-        )
-        .one_or_none()
-    )
+    prediction_service = PredictionService(db)
+    
+    pred = prediction_service.get_prediction(user_id, match_id)
     if not pred:
-        raise HTTPException(404, "Prediction not found (or not yours)")
+        raise HTTPException(HTTPStatus.NOT_FOUND, "Prediction not found (or not yours)")
 
     return pred
 
@@ -202,7 +151,7 @@ def get_prediction(
 ):
     pred = db.get(models.Prediction, prediction_id)
     if not pred:
-        raise HTTPException(404, "Prediction not found")
+        raise HTTPException(HTTPStatus.NOT_FOUND, ErrorMessages.PREDICTION_NOT_FOUND)
     return pred
 
 
@@ -210,12 +159,12 @@ def get_prediction(
 def settleGame(match_id: int, db: Session = Depends(get_db)):
     m = db.get(models.Match, match_id) if hasattr(db, "get") else db.query(models.Match).get(match_id)
     if not m:
-        raise HTTPException(404, "Match not found")
+        raise HTTPException(HTTPStatus.NOT_FOUND, ErrorMessages.MATCH_NOT_FOUND)
     home_score, away_score, status = m.home_score, m.away_score, m.status 
     if home_score is None or away_score is None or status != "finished":
-        raise HTTPException(412, "Match not finished")
+        raise HTTPException(HTTPStatus.PRECONDITION_FAILED, ErrorMessages.MATCH_NOT_FINISHED)
     if home_score == away_score:
-        raise HTTPException(412, "Match not finished (draw/invalid)")
+        raise HTTPException(HTTPStatus.PRECONDITION_FAILED, ErrorMessages.MATCH_NOT_FINISHED_DRAW)
     
     winner = "home" if (home_score > away_score) else "away"
     real_margin = abs(home_score-away_score)
@@ -378,6 +327,20 @@ def get_match_stats(match_id: int, db: Session = Depends(get_db)):
         "margin_histogram": histogram,
     }
     
+    
+@router.get("/predictions/preview/{match_id}")
+def preview_my_prediction(match_id: int, db: Session = Depends(get_db), me: dict = Depends(get_current_user)):
+    m = db.get(models.Match, match_id)
+    user_id = me["id"]
+    if not m: raise HTTPException(404, "Match not found")
+    pred = db.query(models.Prediction).filter_by(match_id=match_id, user_id=user_id).first()
+    if not pred: 
+        return {"match_id": match_id, "preview_points": None, "reason": "no_prediction"}
+    from app.scoring import preview_points
+    pts = preview_points(pred.pick, pred.margin, m.home_score, m.away_score)
+    return {"match_id": match_id, "preview_points": pts}
+
+
 #Simpler, less effective, if the above doesn't work O(1) vs O(N)
 # @router.get("/predictions/by-match/{match_id}")
 # def get_match_stats_py(match_id: int, db: Session = Depends(get_db)):

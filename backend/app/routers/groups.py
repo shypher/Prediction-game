@@ -3,8 +3,11 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import Optional, List
 import secrets
+
+from ..db import models, schemas
 from .auth import get_current_user
-from app import database, models, schemas
+from app import database
+from ..constants import HTTPStatus, ErrorMessages
 
 
 
@@ -49,10 +52,10 @@ def join_group(
     user_id = me["id"]
     g = db.get(models.Group, group_id)
     if not g:
-        raise HTTPException(404, "Group not found")
+        raise HTTPException(HTTPStatus.NOT_FOUND, ErrorMessages.GROUP_NOT_FOUND)
 
     if g.is_private and g.invite_code != invite_code and user_id != g.owner_id:
-        raise HTTPException(403, "Invite code required")
+        raise HTTPException(HTTPStatus.FORBIDDEN, ErrorMessages.INVITE_CODE_REQUIRED)
 
     exists = db.query(models.GroupMember).filter_by(group_id=group_id, user_id=user_id).first()
     if not exists:
@@ -71,12 +74,45 @@ def leave_group(
     user_id = me["id"]
     g = db.get(models.Group, group_id)
     if not g:
-        raise HTTPException(404, "Group not found")
+        raise HTTPException(HTTPStatus.NOT_FOUND, ErrorMessages.GROUP_NOT_FOUND)
     if g.owner_id == user_id:
-        raise HTTPException(409, "Owner cannot leave. Transfer ownership or delete the group.")
+        raise HTTPException(HTTPStatus.CONFLICT, ErrorMessages.OWNER_CANNOT_LEAVE)
 
     r = db.query(models.GroupMember).filter_by(group_id=group_id, user_id=user_id).delete()
     if r == 0:
-        raise HTTPException(404, "Not a member")
+        raise HTTPException(HTTPStatus.NOT_FOUND, ErrorMessages.NOT_A_MEMBER)
+    db.commit()
+    return {"ok": True}
+
+@router.post("/{group_id}/regen-invite")
+def regen_invite(group_id: int, db: Session = Depends(get_db), me: dict = Depends(get_current_user)):
+    user_id = me["id"]
+    g = db.get(models.Group, group_id)
+    if not g: raise HTTPException(HTTPStatus.NOT_FOUND, ErrorMessages.GROUP_NOT_FOUND)
+    if g.owner_id != user_id: raise HTTPException(HTTPStatus.FORBIDDEN, ErrorMessages.OWNER_ONLY)
+    g.invite_code = _new_invite_code()
+    db.commit()
+    return {"invite_code": g.invite_code}
+
+@router.post("/{group_id}/transfer-ownership/{new_owner_id}")
+def transfer_owner(group_id: int, new_owner_id: str, db: Session = Depends(get_db), me: dict = Depends(get_current_user)):
+    user_id = me["id"]
+    g = db.get(models.Group, group_id)
+    if not g: raise HTTPException(HTTPStatus.NOT_FOUND, ErrorMessages.GROUP_NOT_FOUND)
+    if g.owner_id != user_id: raise HTTPException(HTTPStatus.FORBIDDEN, ErrorMessages.OWNER_ONLY)
+    mem = db.query(models.GroupMember).filter_by(group_id=group_id, user_id=new_owner_id).first()
+    if not mem: raise HTTPException(HTTPStatus.NOT_FOUND, ErrorMessages.NEW_OWNER_MUST_BE_MEMBER)
+    g.owner_id = new_owner_id
+    db.commit()
+    return {"ok": True}
+
+@router.delete("/{group_id}/kick/{member_id}")
+def kick_member(group_id: int, member_id: str, db: Session = Depends(get_db), me: dict = Depends(get_current_user)):
+    user_id = me["id"]
+    g = db.get(models.Group, group_id)
+    if not g: raise HTTPException(HTTPStatus.NOT_FOUND, ErrorMessages.GROUP_NOT_FOUND)
+    if g.owner_id != user_id: raise HTTPException(HTTPStatus.FORBIDDEN, ErrorMessages.OWNER_ONLY)
+    if member_id == user_id: raise HTTPException(HTTPStatus.BAD_REQUEST, ErrorMessages.OWNER_CANNOT_KICK_HIMSELF)
+    db.query(models.GroupMember).filter_by(group_id=group_id, user_id=member_id).delete()
     db.commit()
     return {"ok": True}

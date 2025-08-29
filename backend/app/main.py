@@ -1,18 +1,19 @@
 from fastapi import FastAPI, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from .routers import auth, getGames, internal_jobs, predictions, groups, leaderboard, ws
-from . import models, schemas, database
+from .db import models, schemas
+
+from .routers import auth, getGames, internal_jobs, predictions, groups, leaderboard, ws, me
+from . import database
 from fastapi.security import OAuth2PasswordRequestForm
 from typing import Annotated
 from .routers.auth import get_current_user
 import os, logging
-from .utils.migrations import ensure_match_columns
+from .db.migrations import ensure_match_columns
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from .job import job_update_scores, job_settle_ready, job_seed_future, job_ws_reminders_one_hour
+from .job import job_update_scores, job_settle_ready, job_seed_future, job_ws_reminders_one_hour, job_housekeeping
 from .jobs_cadence import cadence_manager_job  
-
-SLOW_SEC = 60
+from .constants import AppConstants, HTTPStatus, ErrorMessages
 
 models.Base.metadata.create_all(bind=database.engine)
 ensure_match_columns(database.engine)
@@ -26,6 +27,7 @@ app.include_router(getGames.router)
 app.include_router(internal_jobs.router)
 app.include_router(predictions.router)
 app.include_router(ws.router)
+app.include_router(me.router)
 # Dependency
 def get_db():
     db = database.SessionLocal()
@@ -36,18 +38,19 @@ def get_db():
         
 db_dependency = Annotated[Session, Depends(get_db)]
 user_dependency = Annotated[dict, Depends(get_current_user)]        
-@app.get("/",status_code=status.HTTP_200_OK)
+@app.get("/",status_code=HTTPStatus.OK)
 async def user(user:user_dependency, db:db_dependency):
     if user is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+        raise HTTPException(status_code=HTTPStatus.UNAUTHORIZED, detail=ErrorMessages.NOT_AUTHENTICATED)
     return {"User": user}
 
 def start_scheduler():
     if os.getenv("RUN_SCHEDULER") == "1":
-        scheduler.add_job(job_update_scores, "interval", seconds=SLOW_SEC, id="update_scores")
+        scheduler.add_job(job_update_scores, "interval", seconds=AppConstants.SLOW_SEC, id="update_scores")
         scheduler.add_job(cadence_manager_job, "interval", seconds=60, id="cadence_manager")
         scheduler.add_job(job_ws_reminders_one_hour, "interval", seconds=60, id="ws_reminders_1h")
-        scheduler.add_job(job_seed_future, "cron", hour =1, id="seed_future_daily")
+        scheduler.add_job(job_seed_future, "cron", minute = 30 , id="seed_future_daily")
+        scheduler.add_job(job_housekeeping, "cron", day=1, id="housekeeping_daily")
         if not scheduler.running:
             scheduler.start()
         print("start_scheduler")

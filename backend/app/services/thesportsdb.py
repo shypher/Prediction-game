@@ -1,5 +1,6 @@
 import os, datetime as dt, requests
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 API_KEY = os.getenv("THESPORTSDB_API_KEY", "123")
 BASE = os.getenv("THESPORTSDB_BASE", "https://www.thesportsdb.com/api/v1/json")
@@ -85,3 +86,14 @@ def map_event_to_row(ev: Dict[str, Any], league_name: str) -> Dict[str, Any]:
         "source": "thesportsdb",
         "season": ev.get("strSeason"),
     }
+
+def events_day(when: dt.date, league_name: str | None = None):
+
+    d = when.isoformat()
+    url = f"{BASE}/{API_KEY}/eventsday.php?d={d}"
+    if league_name:
+        url += f"&l={quote(league_name)}"
+    r = requests.get(url, timeout=15)
+    r.raise_for_status()
+    data = r.json()
+    return data.get("events") or []

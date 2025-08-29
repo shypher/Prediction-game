@@ -1,6 +1,10 @@
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, text
 from sqlalchemy.orm import relationship
-from .database import Base
+from ..database import Base
+from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, Enum, ForeignKey, UniqueConstraint, CheckConstraint
+from sqlalchemy.orm import relationship
+import datetime as dt
 from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
 
 PickEnum = PG_ENUM('home', 'away', name='pick_enum', create_type=False)
@@ -14,6 +18,8 @@ class User(Base):
     email = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
     is_admin = Column(Boolean, default=False)
+    is_bot = Column(Boolean, nullable=False, default=False)
+    login_disabled = Column(Boolean, nullable=False, default=False)
 
 
 class Match(Base):
@@ -36,11 +42,6 @@ class Match(Base):
     last_update = Column(DateTime, nullable=True)
     source = Column(String, nullable=True) 
 
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, Enum, ForeignKey, UniqueConstraint, CheckConstraint
-from sqlalchemy.orm import relationship
-import datetime as dt
-
-from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
 
 PickEnum = PG_ENUM('home', 'away', name='pick_enum', create_type=False)
 

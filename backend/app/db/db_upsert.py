@@ -2,7 +2,7 @@
 from typing import List, Dict
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from .. import models
+from . import models
 
 IMMUTABLE_COLS = {"id"}  # don't overwrite PK
 

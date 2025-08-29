@@ -3,7 +3,9 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import List, Optional
-from app import models, schemas, database
+from app import database
+from ..db import models, schemas
+from ..constants import HTTPStatus, ErrorMessages
 
 router = APIRouter(prefix="/leaderboard", tags=["leaderboard"])
 
@@ -48,7 +50,7 @@ def leaderboard(
     if group_id is not None:
         g = db.get(models.Group, group_id)
         if not g:
-            raise HTTPException(404, "Group not found")
+            raise HTTPException(HTTPStatus.NOT_FOUND, ErrorMessages.GROUP_NOT_FOUND)
         q = q.join(models.GroupMember, models.GroupMember.user_id == models.Prediction.user_id)\
              .filter(models.GroupMember.group_id == group_id)
 

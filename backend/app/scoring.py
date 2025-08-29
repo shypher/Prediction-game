@@ -23,3 +23,9 @@ def score_prediction(pick: Optional[str], margin: int, home_score: int, away_sco
     if dist == 3:
         return 4
     return 3
+
+def preview_points(pick: Optional[str], margin: int, live_home: Optional[int], live_away: Optional[int]) -> Optional[int]:
+    if live_home is None or live_away is None:
+        return None
+    return score_prediction(pick, margin, live_home, live_away)
+

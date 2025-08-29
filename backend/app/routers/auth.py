@@ -4,7 +4,9 @@ from fastapi import Depends, HTTPException, APIRouter
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from starlette import status
-from ..models import User
+
+from ..db import models
+from ..db.models import User
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 import os
@@ -12,10 +14,12 @@ from ..database import SessionLocal
 from authlib.integrations.starlette_client import OAuth
 from starlette.responses import RedirectResponse
 from dotenv import load_dotenv
-from .. import models, database
+from .. import database
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from app.database import get_user_by_email, create_user
 import httpx
+from ..constants import HTTPStatus, ErrorMessages
+from ..services.user_service import UserService
 
 # load_dotenv()
 router = APIRouter( prefix="/auth", tags=["auth"])
@@ -42,52 +46,45 @@ def get_db():
 
 db_dependency = Annotated[Session, Depends(get_db)]
 
-@router.post("/", status_code=status.HTTP_201_CREATED)
+@router.post("/", status_code=HTTPStatus.CREATED)
 async def create_user(db:db_dependency,crate_user_request: UserCreate):
-    crate_user_model= User(
-        username=crate_user_request.username, hashed_password=bcrypt_context.hash(crate_user_request.password),
-        email=crate_user_request.email)
-    db.add(crate_user_model)
-    db.commit()
+    user_service = UserService(db)
+    user_service.create_user(
+        username=crate_user_request.username,
+        email=crate_user_request.email,
+        password=crate_user_request.password
+    )
 
 @router.post("/token", response_model=Token)
 async def login_for_access_token(from_data: Annotated[OAuth2PasswordRequestForm, Depends()],
                                  db: db_dependency):
-    user = authenticate_user(from_data.username, from_data.password, db)
+    user_service = UserService(db)
+    user = user_service.authenticate_user(from_data.username, from_data.password)
     if not user:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password")
-    token = create_access_token(user.username, user.id,timedelta(minutes=30))
+            status_code=HTTPStatus.UNAUTHORIZED,
+            detail=ErrorMessages.INCORRECT_USERNAME_OR_PASSWORD)
+    token = user_service.create_access_token(user["username"], user["id"], timedelta(minutes=30))
     return {"access_token": token, "token_type": "bearer"}
         
-def create_access_token(username: str, user_id: int, expires_delta: timedelta):
-    encode = {'sub': username, 'id': user_id}
-    expires = datetime.utcnow() + expires_delta
-    encode.update({"exp": expires})
-    return jwt.encode(encode, SECRET_KEY, algorithm=ALGORITHM)
-    
-def authenticate_user(username: str, password: str, db):
-    user = db.query(User).filter(User.username == username).first()
-    if not user:
-        return False
-    if not bcrypt_context.verify(password, user.hashed_password):
-        return False
-    return user
+
 async def get_current_user(token: Annotated[str, Depends(oauth2_bearer)]):
     try: 
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
         user_id: int = payload.get("id")
         if username is None or user_id is None:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid authentication credentials")
+            raise HTTPException(status_code=HTTPStatus.UNAUTHORIZED,
+                detail=ErrorMessages.INVALID_CREDENTIALS)
         return {"username": username, "id": user_id}
     except JWTError:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials")
-         
+            status_code=HTTPStatus.UNAUTHORIZED,
+            detail=ErrorMessages.COULD_NOT_VALIDATE_CREDENTIALS)
+   
+   
+   
+####       Google auth
 # ACCESS_TOKEN_EXPIRE_MINUTES = 30
 # GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 # GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")

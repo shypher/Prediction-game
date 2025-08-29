@@ -3,14 +3,32 @@ import logging
 from typing import Dict, Any, Iterable
 from sqlalchemy import text, exists, and_
 from app.database import SessionLocal
-from app import models
+from .db import models
 from app.services import balldontlie
 from app.services import euroleague_open 
 from app.services import thesportsdb
-from .utils.db_upsert import bulk_upsert_by_external_id
+from .db.db_upsert import bulk_upsert_by_external_id
 from . import database
 from .realtime import hub
 import asyncio
+import os
+
+def _is_enabled(name: str, default: bool = True) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return val.strip().lower() in ("1", "true", "on", "yes", "y")
+
+def _enabled_leagues_from_env():
+    csv = os.getenv("SEED_LEAGUES")
+    if csv:
+        return {name.strip() for name in csv.split(",") if name.strip()}
+    active = set()
+    if _is_enabled("ENABLE_SEED_NBA", True): active.add("NBA")
+    if _is_enabled("ENABLE_SEED_EUROLEAGUE", True): active.add("EuroLeague")
+    if _is_enabled("ENABLE_SEED_EUROBASKET", True): active.add("EuroBasket")
+    if _is_enabled("ENABLE_SEED_ISRAEL", True): active.add("Israel")
+    return active
 
 def get_db():
     db = database.SessionLocal()
@@ -88,6 +106,27 @@ def job_settle_ready():
                 real_margin = abs(m.home_score - m.away_score)
                 updated = settle_match_bulk(db, m.id, winner, real_margin)
                 total_updates += updated
+                
+            affected = (
+            db.query(models.Match.id)
+              .filter(models.Match.status.in_(["canceled"]))
+              .filter(
+                  db.query(models.Prediction)
+                    .filter(models.Prediction.match_id == models.Match.id)
+                    .filter(models.Prediction.is_final == False)
+                    .exists()
+              ).all()
+            )
+            if affected:
+                db.execute(text("""
+                    UPDATE predictions
+                    SET points_awarded = 0,
+                        is_final = TRUE
+                    WHERE match_id = ANY(:ids)
+                    AND is_final = FALSE
+                """), {"ids": [x.id for x in affected]})
+                total_updates += len(affected)
+
             if total_updates:
                 db.commit()
             logger.info("[job_settle_ready] matches=%d preds_updated=%d", len(ready), total_updates)
@@ -155,7 +194,7 @@ def job_update_scores(window_hours: int = 6):
             except Exception as e:
                 logger.exception("EuroLeague XML update failed: %s", e)
 
-            # === EuroBasket (+ אופציונלי BSL) דרך TheSportsDB ===
+            # === EuroBasket  TheSportsDB ===
             try:
                 tsdb_leagues = [
                     ("EuroBasket", thesportsdb.tsdb_season_for_eurobasket),
@@ -253,53 +292,92 @@ def job_seed_future(days_ahead: int = 30):
         end = now + dt.timedelta(days=days_ahead)
         all_rows = []
 
+        enabled = _enabled_leagues_from_env()  # <<< חדש
+
         # --- NBA ---
-        try:
-            raw = balldontlie.get_games_range(now.date(), end.date())
-            nba_rows = [balldontlie.map_game_to_row(g) for g in raw]
-            all_rows.extend([r for r in nba_rows if r.get("external_id")])
-        except Exception as e:
-            logger.exception("NBA seed failed: %s", e)
+        if "NBA" in enabled:  # <<< חדש
+            try:
+                raw = balldontlie.get_games_range(now.date(), end.date())
+                nba_rows = [balldontlie.map_game_to_row(g) for g in raw]
+                all_rows.extend([r for r in nba_rows if r.get("external_id")])
+            except Exception as e:
+                logger.exception("NBA seed failed: %s", e)
+        else:
+            logger.info("NBA seeding disabled by config")
 
         # --- EuroLeague (XML) ---
-        try:
-            season_code = f"E{now.year if now.month >= 7 else (now.year - 1)}"
-            el_rows = euroleague_open.get_games_range(now.date(), end.date(), season_code=season_code)
-            all_rows.extend([r for r in el_rows or [] if r.get("external_id")])
-        except Exception as e:
-            logger.exception("EuroLeague seed failed: %s", e)
+        if "EuroLeague" in enabled:  # <<< חדש
+            try:
+                season_code = f"E{now.year if now.month >= 7 else (now.year - 1)}"
+                el_rows = euroleague_open.get_games_range(now.date(), end.date(), season_code=season_code)
+                all_rows.extend([r for r in (el_rows or []) if r.get("external_id")])
+            except Exception as e:
+                logger.exception("EuroLeague seed failed: %s", e)
+        else:
+            logger.info("EuroLeague seeding disabled by config")
 
-        # --- EuroBasket (TSDB) ---
-        try:
-            eb_season = thesportsdb.tsdb_season_for_eurobasket(now.date())
-            eb_events = thesportsdb.events_season_by_league("EuroBasket", eb_season) or []
-            eb_rows = []
-            for ev in eb_events:
-                r = thesportsdb.map_event_to_row(ev, "EuroBasket")
-                if r.get("match_date") and now <= r["match_date"] <= end:
-                    eb_rows.append(r)
-            all_rows.extend(eb_rows)
-        except Exception as e:
-            logger.exception("EuroBasket seed failed: %s", e)
+        # --- EuroBasket (TSDB via eventsday) ---
+        if "EuroBasket" in enabled: 
+            try:
+                eb_rows = []
+                day = now.date()
+                calls = 0
+                while day <= end.date():
+                    evs = thesportsdb.events_day(day, league_name="FIBA EuroBasket")
+                    for ev in evs:
+                        r = thesportsdb.map_event_to_row(ev, "EuroBasket")
+                        if r.get("match_date") and now <= r["match_date"] <= end:
+                            eb_rows.append(r)
+                    calls += 1
+                    if calls % 5 == 0:
+                        import time
+                        time.sleep(15)  
+                    day += dt.timedelta(days=1)
 
-        # --- Israel Super League (TSDB) (אופציונלי; השאר אם אתה רוצה) ---
-        try:
-            il_season = thesportsdb.tsdb_season_for_israel(now.date())
-            il_events = thesportsdb.events_season_by_league("Israel Super League", il_season) or []
-            il_rows = []
-            for ev in il_events:
-                r = thesportsdb.map_event_to_row(ev, "Israel Super League")
-                if r.get("match_date") and now <= r["match_date"] <= end:
-                    il_rows.append(r)
-            all_rows.extend(il_rows)
-        except Exception as e:
-            logger.exception("Israel Super League seed failed: %s", e)
+                all_rows.extend([r for r in eb_rows if r.get("external_id")])
+            except Exception as e:
+                logger.exception("EuroBasket seed failed: %s", e)
+        else:
+            logger.info("EuroBasket seeding disabled by config")
+
+        # --- Israel Super League (TSDB via eventsday) ---
+        if "Israel" in enabled:
+            try:
+                il_rows = []  
+                day = now.date()
+                calls = 0
+                while day <= end.date():
+                    evs = thesportsdb.events_day(day, league_name="Israel Super League")
+                    for ev in evs:
+                        r = thesportsdb.map_event_to_row(ev, "Israel Super League")
+                        if r.get("match_date") and now <= r["match_date"] <= end:
+                            il_rows.append(r)
+                    calls += 1
+                    if calls % 5 == 0:
+                        import time
+                        time.sleep(15)
+                    day += dt.timedelta(days=1)
+
+                all_rows.extend([r for r in il_rows if r.get("external_id")])
+            except Exception as e:
+                logger.exception("Israel Super League seed failed: %s", e)  # <<< תיקון הודעה
+        else:
+            logger.info("Israel Super League seeding disabled by config")
 
         # --- UPSERT + COMMIT ---
         if all_rows:
-            bulk_upsert_by_external_id(db, all_rows)
+            seen = set()
+            deduped = []
+            for r in all_rows:
+                ext = r.get("external_id")
+                if not ext or ext in seen:
+                    continue
+                seen.add(ext)
+                deduped.append(r)
+
+            bulk_upsert_by_external_id(db, deduped)
             db.commit()
-            logger.info("[job_seed_future] upserted=%d (window %s..%s)", len(all_rows), now.date(), end.date())
+            logger.info("[job_seed_future] upserted=%d (window %s..%s)", len(deduped), now.date(), end.date())
         else:
             logger.info("[job_seed_future] nothing to seed (window %s..%s)", now.date(), end.date())
 
@@ -347,7 +425,6 @@ def job_ws_reminders_one_hour():
     db = SessionLocal()
     try:
         now = dt.datetime.utcnow()
-        # חלון דקה סביב "עוד שעה" כדי לא לפספס
         start = now + dt.timedelta(hours=1)
         window_start = start.replace(second=0, microsecond=0)
         window_end   = window_start + dt.timedelta(minutes=1)
@@ -387,6 +464,20 @@ def job_ws_reminders_one_hour():
                     pass
                 _mark_reminder_sent(db, m.id, uid, "one_hour")
 
+        db.commit()
+    finally:
+        db.close()
+        
+def job_housekeeping():
+    db = SessionLocal()
+    try:
+        db.execute(text("DELETE FROM ws_reminders_sent WHERE sent_at < NOW() - INTERVAL '14 days'"))
+
+        # db.execute(text("""
+        #   DELETE FROM matches m
+        #   WHERE m.match_date < NOW() - INTERVAL '3 years'
+        #     AND NOT EXISTS (SELECT 1 FROM predictions p WHERE p.match_id = m.id)
+        # """))
         db.commit()
     finally:
         db.close()

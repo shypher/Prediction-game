@@ -2,22 +2,16 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import Optional, List
 import datetime as dt
-from .. import models, database
+
+from ..db import models
+from .. import database
 from ..services import balldontlie, euroleague_open, thesportsdb
-from ..schemas import NextGameOut
+from ..db.schemas import NextGameOut
 router = APIRouter(prefix="/games", tags=["games"])
 from sqlalchemy import text
-from ..utils.db_upsert import bulk_upsert_by_external_id
-
-
-LEAGUE_RESOLVER = {
-    "NBA": {"source": "balldontlie"},
-    "EuroLeague": {"source": "apisports", "id": 120},
-    "EuroBasket": {"source": "apisports", "id": 197},
-    "Israel Super League": {"source": "apisports", "id": 51},
-    "Israel": {"source": "apisports", "id": 51},
-    "Israeli Super League": {"source": "apisports", "id": 51},
-}
+from ..db.db_upsert import bulk_upsert_by_external_id
+from ..constants import LeagueConstants, LEAGUE_RESOLVER, ErrorMessages, HTTPStatus, AppConstants
+from ..services.match_service import MatchService
 
 def get_db():
     db = database.SessionLocal()
@@ -25,6 +19,8 @@ def get_db():
         yield db
     finally:
         db.close()
+        
+
 
 def _upsert_match(db: Session, row: dict) -> models.Match:
     q = None
@@ -44,89 +40,24 @@ def _upsert_match(db: Session, row: dict) -> models.Match:
     db.add(m)
     return m
 
-def _resolve_league(league: str) -> dict:
-    if league not in LEAGUE_RESOLVER:
-        raise HTTPException(404, f"Unknown league '{league}'. Use one of: {', '.join(LEAGUE_RESOLVER.keys())}")
-    return LEAGUE_RESOLVER[league]
 
-EUROLEAGUE_SEASONCODE = lambda d: f"E{d.year if d.month >= 7 else d.year - 1}"
 
 @router.get("/upcoming")
 def upcoming(
     league: str,
-    days: int = 30,
+    days: int = AppConstants.DEFAULT_DAYS_RANGE,
     db: Session = Depends(get_db),
 ):
-    now = dt.datetime.utcnow()
-    end = now + dt.timedelta(days=days)
-    rows = []
-
-    if league == "NBA":
-        raw = balldontlie.get_games_range(now.date(), end.date())
-        rows = [balldontlie.map_game_to_row(g) for g in raw]
-
-    elif league == "EuroLeague":
-        season_code = f"E{now.year if now.month >= 7 else (now.year - 1)}"
-        rows = []
-        try:
-            rows = euroleague_open.get_games_range(now.date(), end.date(), season_code=season_code)
-        except Exception:
-            rows = []
-
-        if not rows:
-            season_str = thesportsdb.tsdb_season_for_euroleague(now.date())
-            events = thesportsdb.events_season_by_league("EuroLeague", season_str)
-            for ev in events:
-                r = thesportsdb.map_event_to_row(ev, "EuroLeague")
-                if r["match_date"] and now <= r["match_date"] <= end:
-                    rows.append(r)
-
-        if rows:
-            bulk_upsert_by_external_id(db, rows)
-            db.commit()
-
-    elif league == "EuroBasket":
-        season_str = thesportsdb.tsdb_season_for_eurobasket(now.date())
-        events = thesportsdb.events_season_by_league("EuroBasket", season_str)
-        rows = []
-        for ev in events:
-            r = thesportsdb.map_event_to_row(ev, "EuroBasket")
-            if r["match_date"] and now <= r["match_date"] <= end:
-                rows.append(r)
-
-    elif league == "Israel Super League":
-        season_str = thesportsdb.tsdb_season_for_israel(now.date())
-        events = thesportsdb.events_season_by_league("Israel Super League", season_str)
-        rows = []
-        for ev in events:
-            r = thesportsdb.map_event_to_row(ev, "Israel Super League")
-            if r["match_date"] and now <= r["match_date"] <= end:
-                rows.append(r)
-
-    else:
-        raise HTTPException(404, f"Unknown league '{league}'")
-
-    if rows:
-        bulk_upsert_by_external_id(db, rows)
-        db.commit()
-
-    q = (db.query(models.Match)
-           .filter(models.Match.league_name == league)
-           .filter(models.Match.match_date.isnot(None))
-           .filter(models.Match.match_date >= now)
-           .filter(models.Match.match_date <= end)
-           .order_by(models.Match.match_date.asc()))
-    return [{
-        "id": r.id,
-        "external_id": r.external_id,
-        "league": r.league_name,
-        "home": r.home_team,
-        "away": r.away_team,
-        "date": r.match_date,
-        "status": r.status,
-        "source": r.source,
-        "season": r.season,
-    } for r in q.all()]
+    match_service = MatchService(db)
+    
+    try:
+        rows = match_service.get_upcoming_matches(league, days)
+        return rows
+    except ValueError as e:
+        if "Unknown league" in str(e):
+            raise HTTPException(HTTPStatus.NOT_FOUND, str(e))
+        else:
+            raise HTTPException(HTTPStatus.BAD_REQUEST, str(e))
     
     
 @router.get("/_probe_tsdb")
@@ -142,7 +73,7 @@ def probe_tsdb(league: str, days: int = 30):
     elif league == "EuroBasket":
         season = thesportsdb.tsdb_season_for_eurobasket(now_dt.date())  
     else:
-        raise HTTPException(400, "league must be EuroLeague | EuroBasket | Israel Super League")
+        raise HTTPException(HTTPStatus.BAD_REQUEST, ErrorMessages.LEAGUE_MUST_BE_SPECIFIC)
 
     events = thesportsdb.events_season_by_league(league, season)
     filtered = []
@@ -343,3 +274,8 @@ def probe_euroleague(days: int = 60):
         "open_api": {"count": open_count, "sample": open_sample},
         "tsdb": {"season": season_str, "count": tsdb_count, "sample": tsdb_sample},
     }
+    
+    
+    
+    
+    

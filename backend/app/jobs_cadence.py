@@ -1,7 +1,7 @@
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import datetime as dt
 from .database import SessionLocal
-from . import models
+from .db import models
 from apscheduler.jobstores.base import JobLookupError
 import logging
 from .job import job_update_scores
