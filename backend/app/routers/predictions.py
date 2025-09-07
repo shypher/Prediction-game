@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from typing import Optional, List
 import datetime as dt
 import os
-from app import database
+from ..core import database
 from sqlalchemy import text
 from statistics import median
 from sqlalchemy import func, case, text
@@ -11,14 +11,14 @@ from sqlalchemy.exc import IntegrityError
 
 from ..db import models, schemas
 from .auth import get_current_user
-from ..constants import HTTPStatus, ErrorMessages, AppConstants
+from ..core.constants import HTTPStatus, ErrorMessages, AppConstants
 from ..services.prediction_service import PredictionService
 
 router = APIRouter(prefix="/predictions", tags=["predictions"])
 
 
 def require_admin(me: dict = Depends(get_current_user)):
-    user_id = str(me["id"])
+    user_id = me["id"]
     admins = set((os.getenv("ADMIN_USERS") or "").split(","))
     if user_id in admins:
         return user_id
@@ -84,34 +84,24 @@ def update_prediction(
     prediction_service = PredictionService(db)
     
     try:
-        # Get the prediction first to validate ownership
-        pred = db.get(models.Prediction, prediction_id)
-        if not pred:
-            raise HTTPException(HTTPStatus.NOT_FOUND, ErrorMessages.PREDICTION_NOT_FOUND)
-        if str(pred.user_id).strip() != uid:
-            raise HTTPException(HTTPStatus.FORBIDDEN, ErrorMessages.OWN_PREDICTIONS_ONLY)
-        
-        # Update the prediction
         result = prediction_service.update_prediction(
             user_id=uid,
-            match_id=pred.match_id,
+            match_id=prediction_id,
             pick=payload.pick,
-            margin=payload.margin or pred.margin
+            margin=payload.margin
         )
         return result
     except ValueError as e:
-        if "Prediction not found" in str(e):
-            raise HTTPException(HTTPStatus.NOT_FOUND, ErrorMessages.PREDICTION_NOT_FOUND)
+        if "Match not found" in str(e):
+            raise HTTPException(HTTPStatus.NOT_FOUND, ErrorMessages.MATCH_NOT_FOUND)
         elif "Predictions are locked" in str(e):
             raise HTTPException(HTTPStatus.FORBIDDEN, ErrorMessages.PREDICTIONS_LOCKED)
-        elif "Prediction already settled" in str(e):
-            raise HTTPException(HTTPStatus.CONFLICT, ErrorMessages.PREDICTION_ALREADY_SETTLED)
         elif "margin must be >= 0" in str(e):
             raise HTTPException(HTTPStatus.UNPROCESSABLE_ENTITY, "margin must be >= 0")
         elif "pick is required when margin>=1" in str(e):
             raise HTTPException(HTTPStatus.UNPROCESSABLE_ENTITY, "pick is required when margin>=1")
-        elif "Cannot set pick when margin=0" in str(e):
-            raise HTTPException(HTTPStatus.UNPROCESSABLE_ENTITY, "Cannot set pick when margin=0. Set margin>=1 first.")
+        elif "Prediction already settled" in str(e):
+            raise HTTPException(HTTPStatus.CONFLICT, ErrorMessages.PREDICTION_ALREADY_SETTLED)
         else:
             raise HTTPException(HTTPStatus.BAD_REQUEST, str(e))
 
@@ -241,6 +231,11 @@ def settleGame(match_id: int, db: Session = Depends(get_db)):
 
 @router.get("/predictions/by-match/{match_id}")
 def get_match_stats(match_id: int, db: Session = Depends(get_db)):
+    signed_margin = case(
+        (models.Prediction.pick == "home", models.Prediction.margin),
+        (models.Prediction.pick == "away", -models.Prediction.margin),
+    )
+
     base = db.query(models.Prediction).filter(
         models.Prediction.match_id == match_id,
         models.Prediction.margin >= 1
@@ -251,13 +246,15 @@ def get_match_stats(match_id: int, db: Session = Depends(get_db)):
         return {
             "match_id": match_id,
             "total": 0,
-            "pick_home": 0,
-            "pick_away": 0,
             "favorite": None,
             "confidence_pct": None,
-            "avg_margin": None,
-            "median_margin": None,
+            "avg_signed_margin": None,
+            "median_signed_margin": None,
             "margin_histogram": [
+                {"range":"-10-","count":0},
+                {"range":"-9--7","count":0},
+                {"range":"-6--4","count":0},
+                {"range":"-3--1","count":0},
                 {"range":"1-3","count":0},
                 {"range":"4-6","count":0},
                 {"range":"7-9","count":0},
@@ -265,11 +262,13 @@ def get_match_stats(match_id: int, db: Session = Depends(get_db)):
             ],
         }
 
+    # Favorite side & confidence
     pick_home = db.query(func.count()).filter(
         models.Prediction.match_id == match_id,
         models.Prediction.margin >= 1,
         models.Prediction.pick == "home"
     ).scalar()
+
     pick_away = total - pick_home
 
     if pick_home > pick_away:
@@ -282,48 +281,52 @@ def get_match_stats(match_id: int, db: Session = Depends(get_db)):
         favorite = None
         confidence_pct = 50.0
 
-    avg_margin_val = db.query(func.avg(models.Prediction.margin)).filter(
+    # Weighted averages
+    avg_margin_val = db.query(func.avg(signed_margin)).filter(
         models.Prediction.match_id == match_id,
         models.Prediction.margin >= 1
     ).scalar()
-    avg_margin = round(float(avg_margin_val), 2) if avg_margin_val is not None else None
+    avg_signed_margin = round(float(avg_margin_val), 2) if avg_margin_val is not None else None
 
-    median_margin = db.query(
-        func.percentile_cont(0.5).within_group(models.Prediction.margin)
+    median_signed_margin = db.query(
+        func.percentile_cont(0.5).within_group(signed_margin)
     ).filter(
         models.Prediction.match_id == match_id,
         models.Prediction.margin >= 1
     ).scalar()
 
+    # Histogram (negative for away, positive for home)
     bucket_expr = case(
-        (models.Prediction.margin.between(1, 3), "1-3"),
-        (models.Prediction.margin.between(4, 6), "4-6"),
-        (models.Prediction.margin.between(7, 9), "7-9"),
+        (signed_margin <= -10, "-10-"),
+        (signed_margin.between(-9, -7), "-9--7"),
+        (signed_margin.between(-6, -4), "-6--4"),
+        (signed_margin.between(-3, -1), "-3--1"),
+        (signed_margin.between(1, 3), "1-3"),
+        (signed_margin.between(4, 6), "4-6"),
+        (signed_margin.between(7, 9), "7-9"),
         else_="10+"
     ).label("rng")
 
-    rows = db.query(
-        bucket_expr,
-        func.count().label("count")
-    ).filter(
+    rows = db.query(bucket_expr, func.count().label("count")).filter(
         models.Prediction.match_id == match_id,
         models.Prediction.margin >= 1
     ).group_by(bucket_expr).all()
 
-    buckets = {"1-3": 0, "4-6": 0, "7-9": 0, "10+": 0}
+    buckets = {"-10-": 0, "-9--7": 0, "-6--4": 0, "-3--1": 0, "1-3": 0, "4-6": 0, "7-9": 0, "10+": 0}
     for r in rows:
         buckets[r.rng] = r.count
-    histogram = [{"range": k, "count": buckets[k]} for k in ["1-3","4-6","7-9","10+"]]
+
+    histogram = [{"range": k, "count": buckets[k]} for k in buckets.keys()]
 
     return {
         "match_id": match_id,
         "total": total,
-        "pick_home": pick_home,
-        "pick_away": pick_away,
+        "home_pick": pick_home,
+        "away_pick":pick_away,
         "favorite": favorite,
         "confidence_pct": confidence_pct,
-        "avg_margin": avg_margin,
-        "median_margin": median_margin,
+        "avg_signed_margin": avg_signed_margin,
+        "median_signed_margin": median_signed_margin,
         "margin_histogram": histogram,
     }
     

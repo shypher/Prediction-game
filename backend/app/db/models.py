@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, text
 from sqlalchemy.orm import relationship
-from ..database import Base
+from ..core.database import Base
 from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
 from sqlalchemy import Column, Integer, String, DateTime, Boolean, Enum, ForeignKey, UniqueConstraint, CheckConstraint
 from sqlalchemy.orm import relationship
@@ -15,7 +15,7 @@ class User(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True, nullable=False)
-    email = Column(String, unique=True, index=True, nullable=False)
+    email = Column(String, unique=True, index=True, nullable=True)
     hashed_password = Column(String, nullable=False)
     is_admin = Column(Boolean, default=False)
     is_bot = Column(Boolean, nullable=False, default=False)
@@ -50,7 +50,7 @@ class Prediction(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     match_id = Column(Integer, ForeignKey("matches.id", ondelete="CASCADE"), nullable=False, index=True)
-    user_id = Column(String, nullable=False, index=True)  
+    user_id = Column(Integer, nullable=False, index=True)  
     pick = Column(PickEnum, nullable=True)  
     margin = Column(Integer, nullable=False, server_default="0")
     points_awarded = Column(Integer, nullable=False, default=0)
@@ -81,7 +81,7 @@ class Group(Base):
     __tablename__ = "groups"
     id = Column(Integer, primary_key=True)
     name = Column(String, nullable=False)
-    owner_id = Column(String, nullable=False, index=True)
+    owner_id = Column(Integer, nullable=False, index=True)
     invite_code = Column(String, unique=True, index=True)
     is_private = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), server_default=text("NOW()"))
@@ -89,6 +89,6 @@ class Group(Base):
 class GroupMember(Base):
     __tablename__ = "group_members"
     group_id = Column(Integer, ForeignKey("groups.id", ondelete="CASCADE"), primary_key=True)
-    user_id = Column(String, primary_key=True)
+    user_id = Column(Integer, primary_key=True)
     role = Column(String, nullable=False, default="member")
     joined_at = Column(DateTime(timezone=True), server_default=text("NOW()"))

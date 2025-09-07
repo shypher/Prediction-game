@@ -6,8 +6,8 @@ import secrets
 
 from ..db import models, schemas
 from .auth import get_current_user
-from app import database
-from ..constants import HTTPStatus, ErrorMessages
+from ..core import database
+from ..core.constants import HTTPStatus, ErrorMessages
 
 
 

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Header
 import os
 from ..job import job_update_scores, job_settle_ready, job_seed_future
 from .auth import get_current_user
-from ..constants import HTTPStatus, ErrorMessages
+from ..core.constants import HTTPStatus, ErrorMessages
 
 router = APIRouter(prefix="/internal/jobs", tags=["internal-jobs"])
 

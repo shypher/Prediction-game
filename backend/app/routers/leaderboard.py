@@ -3,9 +3,9 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import List, Optional
-from app import database
+from ..core import database
 from ..db import models, schemas
-from ..constants import HTTPStatus, ErrorMessages
+from ..core.constants import HTTPStatus, ErrorMessages
 
 router = APIRouter(prefix="/leaderboard", tags=["leaderboard"])
 

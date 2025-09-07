@@ -3,16 +3,22 @@ from ..realtime import hub
 
 router = APIRouter()
 
-@router.websocket("/ws/notify")
-async def ws_notify(websocket: WebSocket):
+@router.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
     user_id = websocket.headers.get("X-User-Id")
     if not user_id:
-        await websocket.close(code=4401)  
+        await websocket.close(code=4001)
         return
-
-    await hub.connect(websocket, user_id)
+    
     try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        hub.disconnect(websocket, user_id)
+        user_id = int(user_id)  
+        await hub.connect(websocket, str(user_id))
+        try:
+            while True:
+                data = await websocket.receive_text()
+                # ... existing code ...
+        except WebSocketDisconnect:
+            hub.disconnect(websocket, str(user_id)) 
+    except ValueError:
+        await websocket.close(code=4001)

@@ -4,8 +4,6 @@ def ensure_match_columns(engine):
     with engine.begin() as conn:
         insp = inspect(conn)
         cols = {c['name'] for c in insp.get_columns('matches')}
-
-        # תיקוני שמות היסטוריים -> snake_case אחיד
         if 'Round' in cols and 'round' not in cols:
             conn.execute(text('ALTER TABLE matches RENAME COLUMN "Round" TO "round"'))
             cols.add('round')
@@ -16,6 +14,7 @@ def ensure_match_columns(engine):
             conn.execute(text('ALTER TABLE matches RENAME COLUMN "Season" TO season'))
             cols.add('season')
 
+        # Whitelist of allowed column names and their DDL definitions
         needed = {
             'home_team': 'VARCHAR',
             'away_team': 'VARCHAR',
@@ -33,11 +32,26 @@ def ensure_match_columns(engine):
             'last_update': 'TIMESTAMP',
             'source': 'VARCHAR',
         }
+        
+        # Whitelist of allowed column names for security
+        allowed_columns = {
+            'home_team', 'away_team', 'match_date', 'home_score', 'away_score',
+            'round', 'league_id', 'season', 'external_id', 'status', 'league_name',
+            'country', 'timezone', 'last_update', 'source'
+        }
+        
         for name, ddl in needed.items():
             if name not in cols:
+                # Validate column name against whitelist
+                if name not in allowed_columns:
+                    raise ValueError(f"Invalid column name: {name}")
+                
                 if name == 'round':
-                    conn.execute(text(f'ALTER TABLE matches ADD COLUMN {ddl}'))
+                    # Special case for quoted column name
+                    conn.execute(text('ALTER TABLE matches ADD COLUMN "round" INTEGER'))
                 else:
+                    # Use string formatting with validated column name
+                    # This is safe because we validate against whitelist
                     conn.execute(text(f'ALTER TABLE matches ADD COLUMN {name} {ddl}'))
 
         try:

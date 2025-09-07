@@ -1,6 +1,6 @@
 from enum import Enum
 from fastapi import status
-
+import os
 # HTTP Status Codes
 class HTTPStatus:
     OK = status.HTTP_200_OK
@@ -90,3 +90,31 @@ class RoutePaths:
     ME = "/me"
     INTERNAL_JOBS = "/internal-jobs"
     WEBSOCKET = "/ws" 
+    
+class League(str, Enum):
+    NBA = "NBA"
+    EUROLEAGUE = "EuroLeague"
+    EUROBASKET = "EuroBasket"
+    ISRAEL = "Israel Super League"
+
+class ErrorMessages:
+    UNKNOWN_LEAGUE = "Unknown league"
+    
+class BotID(int, Enum):
+    CROWD_MEDIAN = os.getenv("BOT_CROWD_MEDIAN")
+    CROWD_MEAN = os.getenv("BOT_CROWD_MEAN")
+    BOOK_THEODDS = os.getenv("BOT_THEODDS")
+    RANDOM_01 = os.getenv("BOT_ID_R1")
+    RANDOM_02 = os.getenv("BOT_ID_R2")
+    RANDOM_03 = os.getenv("BOT_ID_R3")
+    
+    
+class BotDefaults:
+    RANDOM_HOME_PROB = 0.60
+    RANDOM_MARGIN_CENTER = 7.0
+    RANDOM_MARGIN_SPREAD = 3.0
+    RANDOM_MARGIN_MIN = 1
+    RANDOM_MARGIN_MAX = 20
+    RANDOM_DISTRIBUTION = "triangular"
+    CROWD_OFFSET_MINUTES = 0
+    CROWD_OVERWRITE = True

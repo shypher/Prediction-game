@@ -2,15 +2,16 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import Optional, List
 import datetime as dt
+from sqlalchemy import text, bindparam
 
 from ..db import models
-from .. import database
+from ..core import database
 from ..services import balldontlie, euroleague_open, thesportsdb
 from ..db.schemas import NextGameOut
 router = APIRouter(prefix="/games", tags=["games"])
 from sqlalchemy import text
 from ..db.db_upsert import bulk_upsert_by_external_id
-from ..constants import LeagueConstants, LEAGUE_RESOLVER, ErrorMessages, HTTPStatus, AppConstants
+from ..core.constants import LeagueConstants, LEAGUE_RESOLVER, ErrorMessages, HTTPStatus, AppConstants
 from ..services.match_service import MatchService
 
 def get_db():
@@ -21,43 +22,22 @@ def get_db():
         db.close()
         
 
-
-def _upsert_match(db: Session, row: dict) -> models.Match:
-    q = None
-    if row.get("external_id"):
-        q = db.query(models.Match).filter(models.Match.external_id == row["external_id"]).first()
-    if not q:
-        q = (db.query(models.Match)
-               .filter(models.Match.match_date == row.get("match_date"))
-               .filter(models.Match.home_team == row.get("home_team"))
-               .filter(models.Match.away_team == row.get("away_team"))
-               .first())
-    if q:
-        for k, v in row.items():
-            setattr(q, k, v)
-        return q
-    m = models.Match(**row)
-    db.add(m)
-    return m
-
-
-
 @router.get("/upcoming")
 def upcoming(
     league: str,
     days: int = AppConstants.DEFAULT_DAYS_RANGE,
+    limit: Optional[int] = Query(None, ge=1, le=1000),
     db: Session = Depends(get_db),
 ):
-    match_service = MatchService(db)
-    
+    svc = MatchService(db)
     try:
-        rows = match_service.get_upcoming_matches(league, days)
+        rows = svc.get_upcoming_matches_db(league=league, days=days, limit=limit)
         return rows
     except ValueError as e:
         if "Unknown league" in str(e):
             raise HTTPException(HTTPStatus.NOT_FOUND, str(e))
-        else:
-            raise HTTPException(HTTPStatus.BAD_REQUEST, str(e))
+        raise HTTPException(HTTPStatus.BAD_REQUEST, str(e))
+
     
     
 @router.get("/_probe_tsdb")
@@ -98,56 +78,6 @@ def probe_tsdb(league: str, days: int = 30):
 
 
 
-@router.get("/live")
-def live(
-    league: Optional[str] = Query(None, description="Optional, filter by league"),
-    db: Session = Depends(get_db),
-):
-    if league:
-        meta = _resolve_league(league)
-        if meta["source"] == "apisports":
-            live_games = thesportsdb.get_live_games(league_id=meta["id"])
-            for g in live_games:
-                row = thesportsdb.map_game_to_row(g, league_name=league, league_id=meta["id"])
-                _upsert_match(db, row)
-            db.commit()
-        else:
-            today = dt.datetime.utcnow().date()
-            for g in balldontlie.get_games_by_date(today):
-                row = balldontlie.map_game_to_row(g)
-                _upsert_match(db, row)
-            db.commit()
-    else:
-        live_all = thesportsdb.get_live_games()
-        for g in live_all:
-            league_name = "EuroLeague" if g.get("league", {}).get("id") == 120 else \
-                          "EuroBasket" if g.get("league", {}).get("id") == 197 else \
-                          "Israel Super League" if g.get("league", {}).get("id") == 51 else "Unknown"
-            league_id = g.get("league", {}).get("id")
-            row = thesportsdb.map_game_to_row(g, league_name=league_name, league_id=league_id or 0)
-            _upsert_match(db, row)
-        for g in balldontlie.get_games_by_date(dt.datetime.utcnow().date()):
-            row = balldontlie.map_game_to_row(g)
-            _upsert_match(db, row)
-        db.commit()
-
-    q = db.query(models.Match).filter(models.Match.status.in_(["live", "Live", "In Progress", "inplay"]))
-    if league:
-        q = q.filter(models.Match.league_name == league)
-    rows = q.order_by(models.Match.match_date.asc()).all()
-    return [
-        {
-            "id": r.id,
-            "league": r.league_name,
-            "home": r.home_team,
-            "away": r.away_team,
-            "home_score": r.home_score,
-            "away_score": r.away_score,
-            "status": r.status,
-            "date": r.match_date,
-        }
-        for r in rows
-    ]
 
 @router.post("/sync/fixtures")
 def sync_fixtures(
@@ -183,10 +113,12 @@ def get_next_games(
         q = q.filter(models.Match.league_name == league)
 
     if team:
-        ilike = f"%{team}%"
+        # SQLAlchemy ORM automatically parameterizes this query safely
+        # The f-string is used to create the pattern, but SQLAlchemy handles the parameter binding
+        team_pattern = f"%{team}%"
         q = q.filter(
-            (models.Match.home_team.ilike(ilike)) |
-            (models.Match.away_team.ilike(ilike))
+            (models.Match.home_team.ilike(team_pattern)) |
+            (models.Match.away_team.ilike(team_pattern))
         )
 
     rows = (q.order_by(models.Match.match_date.asc())
@@ -194,7 +126,6 @@ def get_next_games(
               .limit(limit)
               .all())
 
-    # Map DB rows to the schema shape (explicit keys)
     return [
         {
             "id": r.id,
@@ -245,7 +176,6 @@ def probe_euroleague(days: int = 60):
     end = now + dt.timedelta(days=days)
     season_code = f"E{now.year if now.month >= 7 else (now.year - 1)}"
 
-    # Open API
     open_count, open_sample = 0, []
     try:
         raw_open = euroleague_open.get_games_range(now.date(), end.date(), season_code)

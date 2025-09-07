@@ -5,8 +5,8 @@ from sqlalchemy.exc import IntegrityError
 import datetime as dt
 
 from ..db.models import Prediction, Match
-from ..interfaces import IPredictionService
-from ..constants import AppConstants, HTTPStatus, ErrorMessages
+from ..core.interfaces import IPredictionService
+from ..core.constants import AppConstants, HTTPStatus, ErrorMessages
 
 class PredictionService(IPredictionService):
     def __init__(self, db: Session):

@@ -10,15 +10,15 @@ from ..db.models import User
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 import os
-from ..database import SessionLocal
+from ..core.database import SessionLocal
 from authlib.integrations.starlette_client import OAuth
 from starlette.responses import RedirectResponse
 from dotenv import load_dotenv
-from .. import database
+from ..core import database
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from app.database import get_user_by_email, create_user
+from ..core.database import get_user_by_email, create_user
 import httpx
-from ..constants import HTTPStatus, ErrorMessages
+from ..core.constants import HTTPStatus, ErrorMessages
 from ..services.user_service import UserService
 
 # load_dotenv()

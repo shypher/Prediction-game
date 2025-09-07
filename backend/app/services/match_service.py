@@ -5,15 +5,15 @@ import datetime as dt
 import os
 
 from ..db.models import Match
-from ..interfaces import IMatchService
-from ..constants import AppConstants, LeagueConstants, LEAGUE_RESOLVER, ErrorMessages
+from ..core.interfaces import IMatchService
+from ..core.constants import AppConstants, LeagueConstants, LEAGUE_RESOLVER, ErrorMessages
 from ..services import balldontlie, euroleague_open, thesportsdb
 from ..db.db_upsert import bulk_upsert_by_external_id
 
 class MatchService(IMatchService):
     def __init__(self, db: Session):
         self.db = db
-    
+        
     def get_match_by_id(self, match_id: int) -> Optional[Dict[str, Any]]:
         """Get match by ID"""
         match = self.db.get(Match, match_id)
@@ -61,55 +61,15 @@ class MatchService(IMatchService):
         return m
     
     def get_upcoming_matches(self, league: str, days: int = AppConstants.DEFAULT_DAYS_RANGE) -> List[Dict[str, Any]]:
-        """Get upcoming matches for a league"""
         now = dt.datetime.utcnow()
         end = now + dt.timedelta(days=days)
-        rows = []
 
-        if league == LeagueConstants.NBA:
-            raw = balldontlie.get_games_range(now.date(), end.date())
-            rows = [balldontlie.map_game_to_row(g) for g in raw]
-
-        elif league == LeagueConstants.EUROLEAGUE:
-            season_code = self._get_euroleague_season_code(now)
-            rows = []
-            try:
-                rows = euroleague_open.get_games_range(now.date(), end.date(), season_code=season_code)
-            except Exception:
-                rows = []
-
-            if not rows:
-                season_str = thesportsdb.tsdb_season_for_euroleague(now.date())
-                events = thesportsdb.events_season_by_league("EuroLeague", season_str)
-                for ev in events:
-                    r = thesportsdb.map_event_to_row(ev, "EuroLeague")
-                    if r["match_date"] and now <= r["match_date"] <= end:
-                        rows.append(r)
-            else:
-                bulk_upsert_by_external_id(self.db, rows)
-                self.db.commit()
-
-        elif league == LeagueConstants.EUROBASKET:
-            season_str = thesportsdb.tsdb_season_for_eurobasket(now.date())
-            events = thesportsdb.events_season_by_league("EuroBasket", season_str)
-            rows = []
-            for ev in events:
-                r = thesportsdb.map_event_to_row(ev, "EuroBasket")
-                if r["match_date"] and now <= r["match_date"] <= end:
-                    rows.append(r)
-
-        elif league in [LeagueConstants.ISRAEL_SUPER_LEAGUE, LeagueConstants.ISRAEL, LeagueConstants.ISRAELI_SUPER_LEAGUE]:
-            season_str = thesportsdb.tsdb_season_for_israel(now.date())
-            events = thesportsdb.events_season_by_league("Israel Super League", season_str)
-            rows = []
-            for ev in events:
-                r = thesportsdb.map_event_to_row(ev, "Israel Super League")
-                if r["match_date"] and now <= r["match_date"] <= end:
-                    rows.append(r)
-        else:
+        handler = self._handlers.get(league)
+        if not handler:
             raise ValueError(f"{ErrorMessages.UNKNOWN_LEAGUE} '{league}'")
 
-        # Upsert matches
+        rows = handler(now, end)
+
         for row in rows:
             self._upsert_match(row)
         self.db.commit()
@@ -162,4 +122,42 @@ class MatchService(IMatchService):
             ORDER BY match_date DESC
         """))
         
-        return [dict(row) for row in rows] 
+        return [dict(row) for row in rows]
+    
+    
+    def get_upcoming_matches_db(
+        self,
+        league: str,
+        days: int = AppConstants.DEFAULT_DAYS_RANGE,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+
+        now = dt.datetime.utcnow()
+        end = now + dt.timedelta(days=days)
+        cfg = self._resolve_league(league)
+        league_name = cfg.get("name", league)
+
+        q = (
+            self.db.query(Match)
+            .filter(Match.league_name == league_name)
+            .filter(Match.match_date >= now, Match.match_date <= end)
+            .order_by(Match.match_date.asc())
+        )
+        if limit:
+            q = q.limit(limit)
+
+        matches = q.all()
+        out = []
+        for m in matches:
+            out.append({
+                "id": m.id,
+                "external_id": m.external_id,
+                "league": m.league_name,
+                "home": m.home_team,
+                "away": m.away_team,
+                "date": m.match_date,
+                "status": m.status,
+                "source": m.source,
+                "season": m.season,
+            })
+        return out

@@ -59,7 +59,7 @@ def _to_utc_naive(ts: Optional[str], date_local: Optional[str], time_local: Opti
     return None
 
 
-EUROBASKET_UTC_OFFSET = int(os.getenv("EUROBASKET_UTC_OFFSET", "-3")) 
+EUROBASKET_UTC_OFFSET = int(os.getenv("EUROBASKET_UTC_OFFSET", "+3")) 
 def map_event_to_row(ev: Dict[str, Any], league_name: str) -> Dict[str, Any]:
     when = _to_utc_naive(ev.get("strTimestamp"), ev.get("dateEvent"), ev.get("strTime"))+dt.timedelta(hours=EUROBASKET_UTC_OFFSET)
     ext = ev.get("idEvent")
@@ -71,13 +71,22 @@ def map_event_to_row(ev: Dict[str, Any], league_name: str) -> Dict[str, Any]:
         status = "in_progress"
     else:
         status = "scheduled"
+    home_score = None
+    away_score = None
+    try:
+        if ev.get("intHomeScore") is not None:
+            home_score = int(ev.get("intHomeScore"))
+        if ev.get("intAwayScore") is not None:
+            away_score = int(ev.get("intAwayScore"))
+    except (ValueError, TypeError):
+        pass
     return {
         "external_id": external_id,
         "home_team": ev.get("strHomeTeam"),
         "away_team": ev.get("strAwayTeam"),
         "match_date": when,
-        "home_score": None,
-        "away_score": None,
+        "home_score": home_score,
+        "away_score": away_score,
         "status": status,
         "league_id": 0,
         "league_name": league_name,

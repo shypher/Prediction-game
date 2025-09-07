@@ -34,6 +34,9 @@ def bulk_upsert_by_external_id(db: Session, rows: List[Dict]):
         db.execute(stmt)
     else:
         # Generic fallback: read existing external_ids then update/insert row-by-row
+        
+        
+        
         ext_ids = [r["external_id"] for r in rows if r.get("external_id")]
         if not ext_ids:
             return

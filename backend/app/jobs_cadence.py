@@ -1,6 +1,6 @@
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import datetime as dt
-from .database import SessionLocal
+from .core.database import SessionLocal
 from .db import models
 from apscheduler.jobstores.base import JobLookupError
 import logging

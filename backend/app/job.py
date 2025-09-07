@@ -2,17 +2,28 @@ import datetime as dt
 import logging
 from typing import Dict, Any, Iterable
 from sqlalchemy import text, exists, and_
-from app.database import SessionLocal
+from .core.database import SessionLocal
 from .db import models
 from app.services import balldontlie
 from app.services import euroleague_open 
 from app.services import thesportsdb
 from .db.db_upsert import bulk_upsert_by_external_id
-from . import database
+from .core import database
 from .realtime import hub
 import asyncio
 import os
+from typing import List, Dict, Any
+from .core.constants import League
+from .services.bot import _upsert_bot_prediction, _has_pred_for_bot,_random_params_for_bot,_random_pick_and_margin,_crowd_pick_and_margin,CROWD_OVERWRITE
+from .core.constants import BotID
+from datetime import timedelta
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from typing import Optional
 
+
+def set_scheduler(s: AsyncIOScheduler):
+    global _SCHED
+    _SCHED = s
 def _is_enabled(name: str, default: bool = True) -> bool:
     val = os.getenv(name)
     if val is None:
@@ -133,158 +144,114 @@ def job_settle_ready():
         finally:
             db.close()
 
-def job_update_scores(window_hours: int = 6):
+def _norm_status(s: str | None) -> str:
+    if not s:
+        return "scheduled"
+    t = s.strip().lower()
+    if t in {"finished", "final", "full time", "ft", "aet", "after extra time"}:
+        return "finished"
+    if t in {"live", "in progress", "in_progress", "playing", "in play", "1h", "2h", "ht", "ot"}:
+        return "live"
+    if t in {"postponed"}:
+        return "postponed"
+    if t in {"canceled", "cancelled", "abandoned"}:
+        return "canceled"
+    return "scheduled"
+
+def job_update_scores(window_hours: int = 24):
+
     with SessionLocal() as db:
-        
-        updated = 0
+        updated_fields = 0
+        inserted = 0
+
         now = dt.datetime.utcnow()
         sdt = dt.datetime.combine((now - dt.timedelta(hours=window_hours)).date(), dt.time.min)
         edt = dt.datetime.combine((now + dt.timedelta(hours=window_hours)).date(), dt.time.max)
 
+        enabled = _enabled_leagues_from_env()
+        new_rows: list[dict] = []
+
+        def _apply_row(r: dict) -> None:
+            nonlocal updated_fields, inserted
+
+            ext_id = r.get("external_id")
+            when = r.get("match_date")
+            if not ext_id or when is None:
+                return
+            if not (sdt <= when <= edt):
+                return
+            st = _norm_status(r.get("status"))
+            hs = r.get("home_score")
+            as_ = r.get("away_score")
+            if (hs is not None and as_ is not None) and st not in {"canceled", "postponed"}:
+                st = "finished"
+
+            fields = {"status": st}
+            if hs is not None:
+                fields["home_score"] = hs
+            if as_ is not None:
+                fields["away_score"] = as_
+
+            if _update_existing_match(db, ext_id, fields):
+                updated_fields += 1
+            else:
+                new_rows.append(r)
+
         try:
-            # === NBA (balldontlie) ===
-            try:
-                nba_games = balldontlie.get_games_range(sdt.date(), edt.date())
-                for g in nba_games:
-                    try:
-                        row = balldontlie.map_game_to_row(g)
-                    except Exception:
-                        row = {
-                            "external_id": f"nba_{g.get('id')}",
-                            "status": ("finished" if g.get("status", "").lower().startswith("final")
-                                    else "live" if "progress" in g.get("status", "").lower()
-                                    else "scheduled"),
-                            "home_score": g.get("home_team_score"),
-                            "away_score": g.get("visitor_team_score"),
-                        }
-                    ext_id = row.get("external_id")
-                    if not ext_id:
+            for league in League:
+                lname = league.value
+                if lname not in enabled:
+                    logger.info("%s update disabled by config", lname)
+                    continue
+
+                try:
+                    rows = LEAGUE_HANDLERS[league](sdt, edt) 
+                    if not rows:
                         continue
-                    fields = {"status": row.get("status")}
-                    if row.get("home_score") is not None:
-                        fields["home_score"] = row.get("home_score")
-                    if row.get("away_score") is not None:
-                        fields["away_score"] = row.get("away_score")
-                    if _update_existing_match(db, ext_id, fields):
-                        updated += 1
-            except Exception as e:
-                logger.exception("NBA update failed: %s", e)
+                    for r in rows:
+                        _apply_row(r)
+                except Exception as e:
+                    logger.exception("%s update failed: %s", lname, e)
 
-            # === EuroLeague (XML schedules) ===
-            try:
-                el_rows = euroleague_open.get_games_range(sdt.date(), edt.date())
-                for r in el_rows or []:
-                    ext_id = r.get("external_id")
-                    if not ext_id:
+            if new_rows:
+                seen = set()
+                deduped = []
+                for r in new_rows:
+                    ext = r.get("external_id")
+                    if not ext or ext in seen:
                         continue
-                    status_raw = (r.get("status") or "").strip().lower()    
-                    if status_raw == "finished":
-                        if _update_existing_match(db, ext_id, {"status": "finished"}):
-                            updated += 1
-                    elif status_raw in {"in progress", "in_progress", "live", "playing"}:
-                        m = (
-                            db.query(models.Match)
-                            .filter(models.Match.external_id == ext_id)
-                            .one_or_none()
-                        )
-                        if m and m.status not in {"finished", "live"}:
-                            if _update_existing_match(db, ext_id, {"status": "live"}):
-                                updated += 1
-                    
-            except Exception as e:
-                logger.exception("EuroLeague XML update failed: %s", e)
+                    seen.add(ext)
+                    deduped.append(r)
+                if deduped:
+                    bulk_upsert_by_external_id(db, deduped)
+                    inserted = len(deduped)
 
-            # === EuroBasket  TheSportsDB ===
-            try:
-                tsdb_leagues = [
-                    ("EuroBasket", thesportsdb.tsdb_season_for_eurobasket),
-                    # ("Israel Super League", thesportsdb.tsdb_season_for_israel),
-                ]
-
-                def _norm_tsdb_status(ev_status: str | None, mapped_status: str | None) -> str:
-
-                    if mapped_status:
-                        ms = mapped_status.strip().lower()
-                        if ms in {"finished", "ft", "full time", "aet", "after extra time", "final"}:
-                            return "finished"
-                        if ms in {"live", "in_progress", "playing"}:
-                            return "live"
-                        if ms in {"postponed"}:
-                            return "postponed"
-                        if ms in {"canceled", "cancelled", "abandoned"}:
-                            return "canceled"
-
-                    raw = (ev_status or "").strip().lower()
-                    if raw in {"ft", "full time", "finished", "match finished", "final"}:
-                        return "finished"
-                    if raw in {"aet", "after extra time", "ft-pens", "penalties"}:
-                        return "finished"
-                    if raw in {"in play", "live", "playing", "1h", "2h", "ht", "ot"}:
-                        return "live"
-                    if raw in {"postponed"}:
-                        return "postponed"
-                    if raw in {"canceled", "cancelled", "abandoned"}:
-                        return "canceled"
-                    return "scheduled"
-
-                for league_name, season_fn in tsdb_leagues:
-                    season = season_fn(now.date())
-                    events = thesportsdb.events_season_by_league(league_name, season)
-                    if not events:
-                        continue
-
-                    for ev in events:
-                        mapped = thesportsdb.map_event_to_row(ev, league_name)
-                        when = mapped.get("match_date")
-                        if when is None:
-                            try:
-                                d = ev.get("dateEvent")
-                                t = ev.get("strTimestamp") or (ev.get("strTime") and f"{ev['strTime']}")
-                                if d:
-                                    when = dt.datetime.fromisoformat(f"{d}T{(t or '00:00:00')[:8]}")
-                            except Exception:
-                                pass
-                        if when is None or not (sdt <= when <= edt):
-                            continue
-
-                        id_event = ev.get("idEvent")
-                        if not id_event:
-                            continue
-                        ext_id = f"tsdb_{id_event}"
-                        status = _norm_tsdb_status(ev.get("strStatus"), mapped.get("status"))
-                        def _to_int(x):
-                            try:
-                                return int(x) if x is not None else None
-                            except (TypeError, ValueError):
-                                return None
-
-                        hs = mapped.get("home_score")
-                        as_ = mapped.get("away_score")
-                        if hs is None:
-                            hs = _to_int(ev.get("intHomeScore"))
-                        if as_ is None:
-                            as_ = _to_int(ev.get("intAwayScore"))
-
-                        fields = {"status": status}
-                        if hs is not None:
-                            fields["home_score"] = hs
-                        if as_ is not None:
-                            fields["away_score"] = as_
-
-                        if _update_existing_match(db, ext_id, fields):
-                            updated += 1
-            except Exception as e:
-                logger.exception("EuroBasket (TSDB) update failed: %s", e)
-            if updated:
+            if updated_fields or inserted:
                 db.commit()
-            logger.info("[job_update_scores] updated=%d window=%s..%s", updated, sdt, edt)
 
+            logger.info(
+                "[job_update_scores] updated=%d, inserted=%d, window=%s..%s",
+                updated_fields, inserted, sdt, edt
+            )
         finally:
             db.close()
+    job_settle_ready()
         
-        job_settle_ready()
-        
-        
+       
+def _schedule_or_now(sched: AsyncIOScheduler, func, when: dt.datetime,
+                     job_id: str, args: list[int], until: dt.datetime | None):
+    now = dt.datetime.utcnow().replace(tzinfo=sched.timezone)
+    when  = _aware(when,  sched.timezone)
+    until = _aware(until, sched.timezone) if until else None
+
+    if when <= now and (until is None or now < until):
+        when = now + dt.timedelta(seconds=5)
+    elif when <= now:
+        return
+
+    sched.add_job(func, "date",
+                  run_date=when, id=job_id, args=args,
+                  replace_existing=True, misfire_grace_time=300) 
 def job_seed_future(days_ahead: int = 30):
     db = SessionLocal()
     try:
@@ -292,82 +259,21 @@ def job_seed_future(days_ahead: int = 30):
         end = now + dt.timedelta(days=days_ahead)
         all_rows = []
 
-        enabled = _enabled_leagues_from_env()  # <<< חדש
+        enabled = _enabled_leagues_from_env()
 
-        # --- NBA ---
-        if "NBA" in enabled:  # <<< חדש
+        for league in League:
+            if league.value not in enabled:
+                logger.info("%s seeding disabled by config", league.value)
+                continue
+
             try:
-                raw = balldontlie.get_games_range(now.date(), end.date())
-                nba_rows = [balldontlie.map_game_to_row(g) for g in raw]
-                all_rows.extend([r for r in nba_rows if r.get("external_id")])
+                rows = LEAGUE_HANDLERS[league](now, end)
+                all_rows.extend([r for r in rows if r.get("external_id")])
             except Exception as e:
-                logger.exception("NBA seed failed: %s", e)
-        else:
-            logger.info("NBA seeding disabled by config")
+                logger.exception("%s seed failed: %s", league.value, e)
 
-        # --- EuroLeague (XML) ---
-        if "EuroLeague" in enabled:  # <<< חדש
-            try:
-                season_code = f"E{now.year if now.month >= 7 else (now.year - 1)}"
-                el_rows = euroleague_open.get_games_range(now.date(), end.date(), season_code=season_code)
-                all_rows.extend([r for r in (el_rows or []) if r.get("external_id")])
-            except Exception as e:
-                logger.exception("EuroLeague seed failed: %s", e)
-        else:
-            logger.info("EuroLeague seeding disabled by config")
-
-        # --- EuroBasket (TSDB via eventsday) ---
-        if "EuroBasket" in enabled: 
-            try:
-                eb_rows = []
-                day = now.date()
-                calls = 0
-                while day <= end.date():
-                    evs = thesportsdb.events_day(day, league_name="FIBA EuroBasket")
-                    for ev in evs:
-                        r = thesportsdb.map_event_to_row(ev, "EuroBasket")
-                        if r.get("match_date") and now <= r["match_date"] <= end:
-                            eb_rows.append(r)
-                    calls += 1
-                    if calls % 5 == 0:
-                        import time
-                        time.sleep(15)  
-                    day += dt.timedelta(days=1)
-
-                all_rows.extend([r for r in eb_rows if r.get("external_id")])
-            except Exception as e:
-                logger.exception("EuroBasket seed failed: %s", e)
-        else:
-            logger.info("EuroBasket seeding disabled by config")
-
-        # --- Israel Super League (TSDB via eventsday) ---
-        if "Israel" in enabled:
-            try:
-                il_rows = []  
-                day = now.date()
-                calls = 0
-                while day <= end.date():
-                    evs = thesportsdb.events_day(day, league_name="Israel Super League")
-                    for ev in evs:
-                        r = thesportsdb.map_event_to_row(ev, "Israel Super League")
-                        if r.get("match_date") and now <= r["match_date"] <= end:
-                            il_rows.append(r)
-                    calls += 1
-                    if calls % 5 == 0:
-                        import time
-                        time.sleep(15)
-                    day += dt.timedelta(days=1)
-
-                all_rows.extend([r for r in il_rows if r.get("external_id")])
-            except Exception as e:
-                logger.exception("Israel Super League seed failed: %s", e)  # <<< תיקון הודעה
-        else:
-            logger.info("Israel Super League seeding disabled by config")
-
-        # --- UPSERT + COMMIT ---
         if all_rows:
-            seen = set()
-            deduped = []
+            seen, deduped = set(), []
             for r in all_rows:
                 ext = r.get("external_id")
                 if not ext or ext in seen:
@@ -376,20 +282,27 @@ def job_seed_future(days_ahead: int = 30):
                 deduped.append(r)
 
             bulk_upsert_by_external_id(db, deduped)
+            
             db.commit()
-            logger.info("[job_seed_future] upserted=%d (window %s..%s)", len(deduped), now.date(), end.date())
+            ext_ids = [r["external_id"] for r in deduped if r.get("external_id")]
+            if _SCHED and ext_ids:
+                try:
+                    schedule_bots_for_ext_ids(_SCHED, SessionLocal, ext_ids)
+                except Exception as e:
+                    logger.exception("schedule_bots_for_ext_ids failed: %s", e)
+            logger.info("[job_seed_future] upserted=%d (window %s..%s)",
+                        len(deduped), now.date(), end.date())
         else:
             logger.info("[job_seed_future] nothing to seed (window %s..%s)", now.date(), end.date())
-
     finally:
         db.close()
         
-def _exists_reminder(db, match_id: int, user_id: str, kind: str = "one_hour") -> bool:
+def _exists_reminder(db, match_id: int, user_id: int, kind: str = "one_hour") -> bool:  # שנה מ-str ל-int
     sql = text("SELECT 1 FROM ws_reminders_sent WHERE match_id=:m AND user_id=:u AND kind=:k")
     res = db.execute(sql, {"m": match_id, "u": user_id, "k": kind}).first()
     return res is not None
 
-def _mark_reminder_sent(db, match_id: int, user_id: str, kind: str = "one_hour") -> None:
+def _mark_reminder_sent(db, match_id: int, user_id: int, kind: str = "one_hour") -> None:  # שנה מ-str ל-int
     sql = text("""
         INSERT INTO ws_reminders_sent (match_id, user_id, kind)
         VALUES (:m, :u, :k)
@@ -397,7 +310,8 @@ def _mark_reminder_sent(db, match_id: int, user_id: str, kind: str = "one_hour")
     """)
     db.execute(sql, {"m": match_id, "u": user_id, "k": kind})
 
-def _user_has_active_prediction(db, match_id: int, user_id: str) -> bool:
+
+def _user_has_active_prediction(db, match_id: int, user_id: int) -> bool:  # שנה מ-str ל-int
     return db.query(
         exists().where(
             and_(
@@ -421,13 +335,12 @@ def _match_to_payload(m: models.Match) -> dict:
     }
 
 def job_ws_reminders_one_hour():
-
     db = SessionLocal()
     try:
         now = dt.datetime.utcnow()
         start = now + dt.timedelta(hours=1)
         window_start = start.replace(second=0, microsecond=0)
-        window_end   = window_start + dt.timedelta(minutes=1)
+        window_end   = window_start + dt.timedelta(hours=1)
 
         matches = (
             db.query(models.Match)
@@ -459,10 +372,13 @@ def job_ws_reminders_one_hour():
                     "match": match_payload,
                 }
                 try:
-                    asyncio.get_event_loop().create_task(hub.send_to_user(uid, payload))
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        loop.create_task(hub.send_to_user(uid, payload))
+                    else:
+                        asyncio.run(hub.send_to_user(uid, payload))
                 except RuntimeError:
                     pass
-                _mark_reminder_sent(db, m.id, uid, "one_hour")
 
         db.commit()
     finally:
@@ -472,12 +388,195 @@ def job_housekeeping():
     db = SessionLocal()
     try:
         db.execute(text("DELETE FROM ws_reminders_sent WHERE sent_at < NOW() - INTERVAL '14 days'"))
-
-        # db.execute(text("""
-        #   DELETE FROM matches m
-        #   WHERE m.match_date < NOW() - INTERVAL '3 years'
-        #     AND NOT EXISTS (SELECT 1 FROM predictions p WHERE p.match_id = m.id)
-        # """))
         db.commit()
     finally:
         db.close()
+        
+        
+        
+        
+        
+def _seed_nba(now: dt.datetime, end: dt.datetime) -> List[Dict[str, Any]]:
+    raw = balldontlie.get_games_range(now.date(), end.date())
+    return [balldontlie.map_game_to_row(g) for g in raw if g.get("id")]
+
+
+def _seed_euroleague(now: dt.datetime, end: dt.datetime) -> List[Dict[str, Any]]:
+    season_code = f"E{now.year if now.month >= 7 else (now.year - 1)}"
+    return euroleague_open.get_games_range(now.date(), end.date(), season_code=season_code) or []
+
+
+def _seed_eurobasket(start: dt.datetime, end: dt.datetime) -> List[Dict[str, Any]]:
+    rows = []
+    window_start = dt.datetime.combine(start.date(), dt.time.min)
+    day = window_start.date()
+
+    calls = 0
+    while day <= end.date():
+        evs = thesportsdb.events_day(day, league_name="FIBA EuroBasket")
+        for ev in evs:
+            r = thesportsdb.map_event_to_row(ev, "EuroBasket")
+            md = r.get("match_date")
+            if md and window_start <= md <= end:
+                rows.append(r)
+        calls += 1
+        if calls % 5 == 0:
+            import time
+            time.sleep(15)
+        day += dt.timedelta(days=1)
+    return rows
+
+
+def _seed_israel(now: dt.datetime, end: dt.datetime) -> List[Dict[str, Any]]:
+    rows = []
+    day = now.date()
+    calls = 0
+    while day <= end.date():
+        evs = thesportsdb.events_day(day, league_name="Israel Super League")
+        for ev in evs:
+            r = thesportsdb.map_event_to_row(ev, "Israel Super League")
+            if r.get("match_date") and now <= r["match_date"] <= end:
+                rows.append(r)
+        calls += 1
+        if calls % 5 == 0:
+            import time
+            time.sleep(15)
+        day += dt.timedelta(days=1)
+    return rows
+
+
+LEAGUE_HANDLERS = {
+    League.NBA: _seed_nba,
+    League.EUROLEAGUE: _seed_euroleague,
+    League.EUROBASKET: _seed_eurobasket,
+    League.ISRAEL: _seed_israel,
+}
+
+
+def run_random_bots_for_match_job(match_id: int):
+    with SessionLocal() as db:
+        m = db.get(models.Match, match_id)
+        if not m or m.status != "scheduled":
+            return
+        changed = 0
+        for key, enum_id in (("random_01", BotID.RANDOM_01),
+                             ("random_02", BotID.RANDOM_02),
+                             ("random_03", BotID.RANDOM_03)):
+            bot_id = int(enum_id.value)
+            if _has_pred_for_bot(db, m.id, bot_id):
+                continue
+            params = _random_params_for_bot(key)
+            side, mg = _random_pick_and_margin(**params)
+            if _upsert_bot_prediction(db, m.id, bot_id, side, mg):
+                changed += 1
+        if changed:
+            db.commit()
+
+def run_crowd_bots_for_match_job(match_id: int):
+    print("s2")
+    with SessionLocal() as db:
+        m = db.get(models.Match, match_id)
+        if not m or m.status != "scheduled":
+            return
+        stats = _crowd_pick_and_margin(db, m.id)
+        changed = 0
+        mid = int(BotID.CROWD_MEDIAN.value)
+        if (not _has_pred_for_bot(db, m.id, mid)) or CROWD_OVERWRITE:
+            side, mg = stats["med_side"], stats["median"]
+            if _upsert_bot_prediction(db, m.id, mid, side, mg):
+                changed += 1
+        aid = int(BotID.CROWD_MEAN.value)
+        if (not _has_pred_for_bot(db, m.id, aid)) or CROWD_OVERWRITE:
+            side, mg = stats["avg_side"], stats["avg_margin"]
+            if _upsert_bot_prediction(db, m.id, aid, side, mg):
+                changed += 1
+        if changed:
+            db.commit()
+
+def run_book_bot_for_match_job(match_id: int):
+    with SessionLocal() as db:
+        m = db.get(models.Match, match_id)
+        if not m or m.status != "scheduled":
+            return
+        # TODO
+        side, mg = (None, 0)
+        bid = int(BotID.BOOK_THEODDS.value)
+        if not _has_pred_for_bot(db, m.id, bid):
+            if _upsert_bot_prediction(db, m.id, bid, side, mg):
+                db.commit()
+
+def run_book_bot_for_match_job(match_id: int):
+    with SessionLocal() as db:
+        m = db.get(models.Match, match_id)
+        if not m or m.status != "scheduled":
+            return
+        # TODO yippe
+        side, mg = (None, 0)
+        bid = int(BotID.BOOK_THEODDS.value)
+        if not _has_pred_for_bot(db, m.id, bid):
+            if _upsert_bot_prediction(db, m.id, bid, side, mg):
+                db.commit()
+                
+
+_SCHED: Optional[AsyncIOScheduler] = None
+def set_scheduler(s: AsyncIOScheduler):
+    global _SCHED
+    _SCHED = s
+
+def _aware(dtobj: dt.datetime, tz) -> dt.datetime:
+    if dtobj.tzinfo is None:
+        return dtobj.replace(tzinfo=tz)
+    return dtobj.astimezone(tz)
+
+def _safe_run_date(sched: AsyncIOScheduler, func, run_date: dt.datetime, job_id: str, args: list[int]):
+    now_utc = dt.datetime.utcnow().replace(tzinfo=sched.timezone) 
+    run_date = _aware(run_date, sched.timezone)
+    if run_date <= now_utc:
+        return
+    sched.add_job(func, "date", run_date=run_date, id=job_id,
+                  args=args, replace_existing=True, misfire_grace_time=300)
+async def arun_random_bots_for_match_job(match_id: int):
+    await asyncio.to_thread(run_random_bots_for_match_job, match_id)
+
+async def arun_crowd_bots_for_match_job(match_id: int):
+    await asyncio.to_thread(run_crowd_bots_for_match_job, match_id)
+
+async def arun_book_bot_for_match_job(match_id: int):
+    await asyncio.to_thread(run_book_bot_for_match_job, match_id)
+
+
+def schedule_bots_for_match(scheduler: AsyncIOScheduler, m: models.Match, now: Optional[dt.datetime] = None):
+    if not m.match_date or m.status != "scheduled":
+        return
+    tz = scheduler.timezone
+    now = now or dt.datetime.utcnow()
+    created = m.last_update or now
+
+    random_at = max(m.match_date - timedelta(days=7), created)
+    crowd_at  = m.match_date
+    book_at   = m.match_date - timedelta(seconds=60)
+
+    _schedule_or_now(scheduler, arun_random_bots_for_match_job, random_at, f"bot_random_{m.id}", [m.id], m.match_date)
+    _schedule_or_now(scheduler, arun_crowd_bots_for_match_job,  crowd_at,  f"bot_crowd_{m.id}",  [m.id], m.match_date)
+    _schedule_or_now(scheduler, arun_book_bot_for_match_job,    book_at,   f"bot_book_{m.id}",   [m.id], m.match_date)
+
+def schedule_bots_for_ext_ids(scheduler: AsyncIOScheduler, db_factory, ext_ids: list[str]):
+    with db_factory() as s:
+        now = dt.datetime.utcnow()
+        matches = (s.query(models.Match)
+                     .filter(models.Match.external_id.in_(ext_ids))
+                     .filter(models.Match.status == "scheduled")
+                     .filter(models.Match.match_date > now)
+                     .all())
+        for m in matches:
+            schedule_bots_for_match(scheduler, m, now)
+
+def schedule_bots_for_all_future(scheduler: AsyncIOScheduler):
+    with SessionLocal() as s:
+        now = dt.datetime.utcnow()
+        matches = (s.query(models.Match)
+                     .filter(models.Match.status == "scheduled")
+                     .filter(models.Match.match_date > now)
+                     .all())
+        for m in matches:
+            schedule_bots_for_match(scheduler, m, now)

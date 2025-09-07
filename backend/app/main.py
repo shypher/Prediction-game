@@ -1,10 +1,12 @@
 from fastapi import FastAPI, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from .job import set_scheduler,schedule_bots_for_all_future,job_update_scores,job_ws_reminders_one_hour,job_seed_future,job_housekeeping
 
 from .db import models, schemas
 
-from .routers import auth, getGames, internal_jobs, predictions, groups, leaderboard, ws, me
-from . import database
+from .routers import auth, getGames, internal_jobs, predictions, groups, leaderboard, ws, me, adminFix
+from .core import database
 from fastapi.security import OAuth2PasswordRequestForm
 from typing import Annotated
 from .routers.auth import get_current_user
@@ -12,13 +14,13 @@ import os, logging
 from .db.migrations import ensure_match_columns
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from .job import job_update_scores, job_settle_ready, job_seed_future, job_ws_reminders_one_hour, job_housekeeping
-from .jobs_cadence import cadence_manager_job  
-from .constants import AppConstants, HTTPStatus, ErrorMessages
+from .core.constants import AppConstants, HTTPStatus, ErrorMessages
+from .jobs_cadence import cadence_manager_job
 
 models.Base.metadata.create_all(bind=database.engine)
 ensure_match_columns(database.engine)
 logger = logging.getLogger("uvicorn")
-scheduler = AsyncIOScheduler()
+scheduler = AsyncIOScheduler(timezone="UTC")
 app = FastAPI()
 app.include_router(groups.router)
 app.include_router(leaderboard.router)
@@ -28,6 +30,7 @@ app.include_router(internal_jobs.router)
 app.include_router(predictions.router)
 app.include_router(ws.router)
 app.include_router(me.router)
+app.include_router(adminFix.router)
 # Dependency
 def get_db():
     db = database.SessionLocal()
@@ -46,15 +49,25 @@ async def user(user:user_dependency, db:db_dependency):
 
 def start_scheduler():
     if os.getenv("RUN_SCHEDULER") == "1":
-        scheduler.add_job(job_update_scores, "interval", seconds=AppConstants.SLOW_SEC, id="update_scores")
-        scheduler.add_job(cadence_manager_job, "interval", seconds=60, id="cadence_manager")
-        scheduler.add_job(job_ws_reminders_one_hour, "interval", seconds=60, id="ws_reminders_1h")
-        scheduler.add_job(job_seed_future, "cron", minute = 30 , id="seed_future_daily")
-        scheduler.add_job(job_housekeeping, "cron", day=1, id="housekeeping_daily")
+        set_scheduler(scheduler)
+
+        scheduler.add_job(job_update_scores, "interval",
+                          seconds=AppConstants.SLOW_SEC, id="update_scores")
+        scheduler.add_job(cadence_manager_job, "interval",
+                          seconds=180, id="cadence_manager")
+        scheduler.add_job(job_ws_reminders_one_hour, "interval",
+                          seconds=60, id="ws_reminders_1h")
+
+        scheduler.add_job(job_seed_future, "cron",
+                          minute=30, id="seed_future_daily")
+        scheduler.add_job(job_housekeeping, "cron",
+                          hour=3, id="housekeeping_daily")
+
+        schedule_bots_for_all_future(scheduler)
+
         if not scheduler.running:
             scheduler.start()
         print("start_scheduler")
-        
         
 
 @app.on_event("startup")

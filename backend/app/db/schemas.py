@@ -38,7 +38,7 @@ class NextGameOut(BaseModel):
     season: Optional[int] = None
 
     class Config:
-        orm_mode = True  
+        from_attributes = True
         
 class PredictionBase(BaseModel):
     pick: Optional[Literal["home", "away"]] = Field(None, description="Winner pick; must be null when margin=0")
@@ -63,7 +63,7 @@ class PredictionUpdate(BaseModel):
 class PredictionOut(BaseModel):
     id: int
     match_id: int
-    user_id: str
+    user_id: int
     pick: Optional[Literal["home", "away"]]
     margin: int
     points_awarded: int

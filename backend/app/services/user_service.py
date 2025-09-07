@@ -6,8 +6,8 @@ from datetime import datetime, timedelta
 import os
 
 from ..db.models import User
-from ..interfaces import IUserService
-from ..constants import HTTPStatus, ErrorMessages
+from ..core.interfaces import IUserService
+from ..core.constants import HTTPStatus, ErrorMessages
 
 bcrypt_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
