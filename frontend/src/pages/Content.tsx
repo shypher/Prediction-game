@@ -5,7 +5,7 @@ import CreateGroup from "./groups/CreateGroup";
 import { MOCK_GROUPS } from "./groups/MockGroups";
 import ResultsPage from "./games/ResultsPage";
 import TablePage from "./games/TablePage";
-
+import GamesStatsPage from "./games/GamesStatsPage";
 function Placeholder({ title, note }: { title: string; note?: string }) {
   return (
     <>
@@ -17,7 +17,6 @@ function Placeholder({ title, note }: { title: string; note?: string }) {
   );
 }
 
-// Small wrappers so we can keep your existing child components without changing them
 function GroupsIndexRoute() {
   const navigate = useNavigate();
   return <MyGroupsList onOpenGroup={(id) => navigate(`/groups/${id}`)} />;
@@ -31,8 +30,7 @@ function GroupOverviewRoute() {
 }
 
 export default function Content() {
-  // ⬇️ We render routes inside your existing content area.
-  //     No layout/CSS changes — only which component shows for which URL.
+
   return (
     <Routes>
       {/* Home / Overview & Updates */}
@@ -44,7 +42,7 @@ export default function Content() {
       <Route path="/games/results" element={<ResultsPage />} />
       <Route path="/games/results/:matchId" element={<ResultsPage />} />
       <Route path="/games/table" element={<TablePage />} />
-      <Route path="/games/stats" element={<Placeholder title="Stats" note="KPIs & charts (later)" />} />
+      <Route path="/games/stats" element={<GamesStatsPage leagueId={120} season={2023} />} />
 
       {/* Groups */}
       <Route path="/groups" element={<GroupsIndexRoute />} />

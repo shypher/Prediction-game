@@ -6,9 +6,7 @@ export type ResultsFilters = { league: string; date: string };
 
 type Prediction = { winner: "home" | "away" | null; spread: number };
 function normalizeName(s: string): string {
-  const x = s
-    .normalize("NFD")
-    .toLowerCase();
+  const x = s.normalize("NFD").toLowerCase();
   const tokens = x
     .replace(/[^a-z0-9]+/g, " ")
     .split(" ")
@@ -27,7 +25,9 @@ function normalizeName(s: string): string {
     "ldlc",
     "istanbul",
     "belgrade",
-    "athens","gasteiz", "piraeus"
+    "athens",
+    "gasteiz",
+    "piraeus",
   ]);
   const kept = tokens.filter((t) => !skip.has(t));
   return kept.join(" ").toUpperCase();
@@ -54,7 +54,24 @@ type Props = {
   teamAssets?: Record<number, LeagueAssets>;
 };
 
-
+function uniqSorted<T>(arr: T[]) {
+  return Array.from(new Set(arr)).sort() as T[];
+}
+function firstOrNextDateForLeague(
+  allMatches: UIMatch[],
+  leagueId: number,
+  base?: string
+) {
+  const days = uniqSorted(
+    allMatches
+      .filter((m) => m.leagueId === leagueId)
+      .map((m) => dateKeyFromISO(m.date))
+  );
+  if (!days.length) return "";
+  if (!base) return days[0];
+  const i = days.findIndex((d) => d >= base);
+  return i >= 0 ? days[i] : days[0];
+}
 function dateKeyFromISO(s: string): string {
   const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (m) return `${m[1]}-${m[2]}-${m[3]}`;
@@ -92,56 +109,27 @@ export default function ResultsHeader({
   const scrollNext = () => scrollBy(+360);
   const leagueMatches = useMemo(() => {
     if (!filters.league) return allMatches;
-    return allMatches.filter(m => m.leagueName === filters.league);
-
+    return allMatches.filter((m) => m.leagueName === filters.league);
   }, [allMatches, filters.league]);
   const todayKey = useMemo(() => {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${dd}`;
-}, []);
-  const dateOptions = useMemo(() => {
-  const set = new Set<string>();
-  for (const m of leagueMatches) {
-    const d = new Date(m.date);
+    const d = new Date();
     const y = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const m = String(d.getMonth() + 1).padStart(2, "0");
     const dd = String(d.getDate()).padStart(2, "0");
-    set.add(`${y}-${mm}-${dd}`);
-  }
-  const values = Array.from(set).sort(); // עולה
-  return values.map(v => {
-    const [yy, mm, dd] = v.split("-").map(Number);
-    const label = new Date(yy, mm - 1, dd).toLocaleDateString("he-IL", {
-      weekday: "short", month: "numeric", day: "numeric"
-    });
-    return { value: v, label };
-  });
-}, [leagueMatches]);
-  useEffect(() => {
-  if (!filters.league) return;           
-  if (!dateOptions.length) return;       
-  const hasCurrent = !!dateOptions.find(o => o.value === filters.date);
-  if (hasCurrent) return;           
-
-  const next =
-    dateOptions.find(o => o.value >= todayKey)?.value
-    ?? dateOptions[dateOptions.length - 1].value;
-
-  if (next !== filters.date) {
-    onChangeFilters({ ...filters, date: next });
-  }
-}, [filters.league, dateOptions, todayKey]);
-  useEffect(() => {
-  if (filters.date) return;
-  if (!dateOptions.length) return;
-  const today = new Date();
-  const todayKey = dateKeyFromISO(today.toISOString());
-  const next = dateOptions.find(o => o.value >= todayKey)?.value ?? dateOptions[0].value;
-  onChangeFilters({ ...filters, date: next });
-}, [dateOptions]);
+    return `${y}-${m}-${dd}`;
+  }, []);
+  const selectedLeagueId = filters.league ? Number(filters.league) : null;
+  const dateOptions = useMemo(() => {
+    const pool = selectedLeagueId
+      ? allMatches.filter(m => m.leagueId === selectedLeagueId)
+      : allMatches;
+    return uniqSorted(pool.map(m => dateKeyFromISO(m.date)));
+  }, [allMatches, selectedLeagueId]);
+    const dateValue = useMemo(() => {
+    if (!filters.date) return ""; 
+    if (dateOptions.includes(filters.date)) return filters.date;
+    return dateOptions[0] || ""; 
+  }, [filters.date, dateOptions]);
   return (
     <div className="results-header">
       <div className="results-header-grid">
@@ -150,9 +138,28 @@ export default function ResultsHeader({
             <label>League</label>
             <select
               value={filters.league}
-              onChange={(e) =>
-                onChangeFilters({ ...filters, league: e.target.value })
-              }
+              onChange={(e) => {
+                const league = e.target.value;
+                if (!league) {
+                  onChangeFilters({ ...filters, league });
+                  return;
+                }
+                const lid = Number(league);
+                const curDay = filters.date || "";
+                const dayHasLeague =
+                  !curDay ||
+                  allMatches.some(
+                    (m) => m.leagueId === lid && dateKeyFromISO(m.date) === curDay
+                  );
+                const nextDate = dayHasLeague
+                  ? curDay
+                  : firstOrNextDateForLeague(
+                      allMatches,
+                      lid,
+                      curDay || dateKeyFromISO(new Date().toISOString())
+                    );
+                onChangeFilters({ ...filters, league, date: nextDate });
+              }}
             >
               <option value="">All</option>
               {leagues.map((l) => (
@@ -166,17 +173,14 @@ export default function ResultsHeader({
           <div>
             <label>Date</label>
             <select
-              value={filters.date}
-              onChange={(e) =>
-                onChangeFilters({ ...filters, date: e.target.value })
-              }
+              value={dateValue}
+              onChange={(e) => onChangeFilters({ ...filters, date: e.target.value })}
+
             >
-              <option value="">All dates</option>
-              {dateOptions.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
+               <option value="">All dates</option>
+        {dateOptions.map((d) => (
+          <option key={d} value={d}>{d}</option>
+        ))}
             </select>
           </div>
         </div>
@@ -241,7 +245,9 @@ export default function ResultsHeader({
                   {ha?.logo_url && (
                     <img src={ha.logo_url} alt="" className="team-logo chip" />
                   )}
-                  <span className="team-name">{normalizeName(m.home.name)}</span>
+                  <span className="team-name">
+                    {normalizeName(m.home.name)}
+                  </span>
                   {isHomePicked && pred?.spread != null && (
                     <span className="spread">+{pred.spread}</span>
                   )}
@@ -255,7 +261,9 @@ export default function ResultsHeader({
                   {aa?.logo_url && (
                     <img src={aa.logo_url} alt="" className="team-logo chip" />
                   )}
-                  <span className="team-name">{normalizeName(m.away.name)}</span>
+                  <span className="team-name">
+                    {normalizeName(m.away.name)}
+                  </span>
                   {isAwayPicked && pred?.spread != null && (
                     <span className="spread">+{pred.spread}</span>
                   )}

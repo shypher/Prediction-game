@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, distinct
 from ..core import database
 from ..db.models  import Team, Player, Match, GamePlayerStat, GameTeamStat
+from fastapi import HTTPException
 
 
 router = APIRouter(prefix="/stats", tags=["stats"])
@@ -94,3 +95,90 @@ def team_game_stats(match_id: int, team_id: int, db: Session = Depends(get_db)):
             "FG%": FGp, "3P%": TPp, "FT%": FTp, "3PTM": x.fg3m
         }
     return {"for": pack(me), "against": pack(opp)}
+
+
+VALID_PLAYER_METRICS = {
+    "pts": ("pts", GamePlayerStat.pts),
+    "ast": ("ast", GamePlayerStat.ast),
+    "reb": ("reb", GamePlayerStat.reb),
+    "stl": ("stl", GamePlayerStat.stl),
+    "blk": ("blk", GamePlayerStat.blk),
+    "fg3m": ("fg3m", GamePlayerStat.fg3m),
+}
+@router.get("/top-players")
+def top_players(
+    league_id: int = Query(...),
+    season: int = Query(...),
+    metric: str = Query(..., description="one of: pts, ast, reb, stl, blk, fg3m"),
+    limit: int = Query(5, ge=1, le=50),
+    db: Session = Depends(get_db),
+):
+    if metric not in VALID_PLAYER_METRICS:
+        raise HTTPException(400, f"invalid metric: {metric}")
+    key, col = VALID_PLAYER_METRICS[metric]
+
+    q = (
+        db.query(
+            Player.id.label("player_id"),
+            Player.first_name,
+            Player.last_name,
+            Team.id.label("team_id"),
+            Team.name.label("team"),
+            func.sum(col).label("v"),
+        )
+        .join(GamePlayerStat, GamePlayerStat.player_id == Player.id)
+        .join(Match, Match.id == GamePlayerStat.match_id)
+        .outerjoin(Team, Team.id == Player.team_id)
+        .filter(GamePlayerStat.league_id == league_id, Match.season == season)
+        .group_by(Player.id, Team.id, Team.name, Player.first_name, Player.last_name)
+        .order_by(func.sum(col).desc())
+        .limit(limit)
+    ).all()
+
+    out = []
+    for row in q:
+        out.append({
+            "player_id": row.player_id,
+            "player": f"{row.first_name or ''} {row.last_name or ''}".strip(),
+            "team_id": row.team_id,
+            "team": row.team,
+            key: int(row.v or 0),
+        })
+    return {"league_id": league_id, "season": season, "metric": metric, "players": out}
+
+
+@router.get("/top-teams")
+def top_teams(
+    league_id: int = Query(...),
+    season: int = Query(...),
+    metric: str = Query(..., description="one of: pts, ast, reb, stl, blk, fg3m"),
+    limit: int = Query(5, ge=1, le=50),
+    db: Session = Depends(get_db),
+):
+    if metric not in VALID_PLAYER_METRICS:
+        raise HTTPException(400, f"invalid metric: {metric}")
+    key, col = VALID_PLAYER_METRICS[metric]
+
+    q = (
+        db.query(
+            Team.id.label("team_id"),
+            Team.name.label("team"),
+            func.sum(col).label("v"),
+        )
+        .join(Player, Player.team_id == Team.id)
+        .join(GamePlayerStat, GamePlayerStat.player_id == Player.id)
+        .join(Match, Match.id == GamePlayerStat.match_id)
+        .filter(GamePlayerStat.league_id == league_id, Match.season == season)
+        .group_by(Team.id, Team.name)
+        .order_by(func.sum(col).desc())
+        .limit(limit)
+    ).all()
+
+    out = []
+    for row in q:
+        out.append({
+            "team_id": row.team_id,
+            "team": row.team,
+            key: int(row.v or 0),
+        })
+    return {"league_id": league_id, "season": season, "metric": metric, "teams": out}
