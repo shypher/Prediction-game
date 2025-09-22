@@ -98,3 +98,13 @@ class GroupOut(BaseModel):
     is_private: bool
     member_count: int
     model_config = ConfigDict(from_attributes=True)
+    
+    
+class StandingRow(BaseModel):
+    team: str
+    w: int
+    l: int
+    pf: int
+    pa: int
+    diff: int
+    rank: int

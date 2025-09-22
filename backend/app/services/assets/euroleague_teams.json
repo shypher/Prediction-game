@@ -1,0 +1,25 @@
+{
+  "league_id": 120,
+  "teams": [
+    {"name":"Anadolu Efes Istanbul","slug":"anadolu-efes","primary_color":"#213557","secondary_color":"#00A4D2","logo_path":"/static/logos/euroleague/anadolu-efes.png"},
+    {"name":"AS Monaco","slug":"as-monaco","primary_color":"#C20E1A","secondary_color":"#FFFFFF","logo_path":"/static/logos/euroleague/as-monaco.png"},
+    {"name":"Baskonia Vitoria-Gasteiz","slug":"baskonia","primary_color":"#0B2240","secondary_color":"#CF152D","logo_path":"/static/logos/euroleague/baskonia.png"},
+    {"name":"Crvena Zvezda Meridianbet Belgrade","slug":"crvena-zvezda","primary_color":"#EB1926","secondary_color":"#FFFFFF","logo_path":"/static/logos/euroleague/crvena-zvezda.png"},
+    {"name":"Dubai Basketball","slug":"dubai-basketball","primary_color":"#000000","secondary_color":"#D4AF37","logo_path":"/static/logos/euroleague/dubai.png"},
+    {"name":"EA7 Emporio Armani Milan","slug":"olimpia-milano","primary_color":"#E2231A","secondary_color":"#FFFFFF","logo_path":"/static/logos/euroleague/olimpia-milano.png"},
+    {"name":"FC Barcelona","slug":"fc-barcelona","primary_color":"#A50044","secondary_color":"#004D98","logo_path":"/static/logos/euroleague/fc-barcelona.png"},
+    {"name":"FC Bayern Munich","slug":"bayern-munich","primary_color":"#DC052D","secondary_color":"#0066B2","logo_path":"/static/logos/euroleague/bayern-munich.png"},
+    {"name":"Fenerbahce Beko Istanbul","slug":"fenerbahce-beko","primary_color":"#FFED00","secondary_color":"#00417F","logo_path":"/static/logos/euroleague/fenerbahce-beko.png"},
+    {"name":"Hapoel IBI Tel Aviv","slug":"hapoel-tel-aviv","primary_color":"#ED1C24","secondary_color":"#FFFFFF","logo_path":"/static/logos/euroleague/hapoel-tel-aviv.png"},
+    {"name":"LDLC ASVEL Villeurbanne","slug":"asvel","primary_color":"#000000","secondary_color":"#7F7F7F","logo_path":"/static/logos/euroleague/asvel.png"},
+    {"name":"Maccabi Playtika Tel Aviv","slug":"maccabi-tel-aviv","primary_color":"#FFF100","secondary_color":"#2371B5","logo_path":"/static/logos/euroleague/maccabi-tel-aviv.png"},
+    {"name":"Olympiacos Piraeus","slug":"olympiacos-piraeus","primary_color":"#C8102E","secondary_color":"#FFFFFF","logo_path":"/static/logos/euroleague/olympiacos-piraeus.png"},
+    {"name":"Panathinaikos AKTOR Athens","slug":"panathinaikos-athens","primary_color":"#007841","secondary_color":"#FFE600","logo_path":"/static/logos/euroleague/panathinaikos-athens.png"},
+    {"name":"Paris Basketball","slug":"paris","primary_color":"#000000","secondary_color":"#00AEEF","logo_path":"/static/logos/euroleague/paris.png"},
+    {"name":"Partizan Mozzart Bet Belgrade","slug":"partizan","primary_color":"#000000","secondary_color":"#FFFFFF","logo_path":"/static/logos/euroleague/partizan.png"},
+    {"name":"Real Madrid","slug":"real-madrid","primary_color":"#00529F","secondary_color":"#FEBE10","logo_path":"/static/logos/euroleague/real-madrid.png"},
+    {"name":"Valencia Basket","slug":"valencia-basket","primary_color":"#FF8200","secondary_color":"#1D1D1B","logo_path":"/static/logos/euroleague/valencia-basket.png"},
+    {"name":"Virtus Segafredo Bologna","slug":"virtus-bologna","primary_color":"#000000","secondary_color":"#FFFFFF","logo_path":"/static/logos/euroleague/virtus-bologna.png"},
+    {"name":"Zalgiris Kaunas","slug":"zalgiris-kaunas","primary_color":"#146734","secondary_color":"#FFFFFF","logo_path":"/static/logos/euroleague/zalgiris-kaunas.png"}
+  ]
+}

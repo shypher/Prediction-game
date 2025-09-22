@@ -1,10 +1,11 @@
 from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from .job import set_scheduler,schedule_bots_for_all_future,job_update_scores,job_ws_reminders_one_hour,job_seed_future,job_housekeeping
-
+from app.routers import euroleague_stats
 from .db import models, schemas
-
+from app.routers import team_season
 from .routers import auth, getGames, internal_jobs, predictions, groups, leaderboard, ws, me, adminFix
 from .core import database
 from fastapi.security import OAuth2PasswordRequestForm
@@ -16,12 +17,28 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from .job import job_update_scores, job_settle_ready, job_seed_future, job_ws_reminders_one_hour, job_housekeeping
 from .core.constants import AppConstants, HTTPStatus, ErrorMessages
 from .jobs_cadence import cadence_manager_job
-
+from app.routers import teams
+from app.routers import league_overview
+from pathlib import Path
+from fastapi.staticfiles import StaticFiles
+from app.routers import match_full
 models.Base.metadata.create_all(bind=database.engine)
 ensure_match_columns(database.engine)
 logger = logging.getLogger("uvicorn")
 scheduler = AsyncIOScheduler(timezone="UTC")
 app = FastAPI()
+BASE_DIR = Path(__file__).resolve().parent
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://localhost:5175"],  # Add your frontend URLs
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+app.include_router(match_full.router)
+app.include_router(euroleague_stats.router)
 app.include_router(groups.router)
 app.include_router(leaderboard.router)
 app.include_router(auth.router)
@@ -31,6 +48,9 @@ app.include_router(predictions.router)
 app.include_router(ws.router)
 app.include_router(me.router)
 app.include_router(adminFix.router)
+app.include_router(teams.router)
+app.include_router(team_season.router)
+app.include_router(league_overview.router)
 # Dependency
 def get_db():
     db = database.SessionLocal()

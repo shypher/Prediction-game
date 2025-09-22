@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, text
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, text, Float
 from sqlalchemy.orm import relationship
 from ..core.database import Base
 from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
@@ -92,3 +92,70 @@ class GroupMember(Base):
     user_id = Column(Integer, primary_key=True)
     role = Column(String, nullable=False, default="member")
     joined_at = Column(DateTime(timezone=True), server_default=text("NOW()"))
+    
+    
+class Team(Base):
+    __tablename__ = "teams"
+    id = Column(Integer, primary_key=True, index=True)
+    external_id = Column(String, index=True, nullable=True)
+    league_id = Column(Integer, index=True, nullable=False)
+    name = Column(String, index=True, nullable=False)
+    abbreviation = Column(String, index=True, nullable=True)
+    logo_url = Column(String, nullable=True)
+    primary_color = Column(String, nullable=True)
+    secondary_color = Column(String, nullable=True)
+    country = Column(String, nullable=True)
+    __table_args__ = (UniqueConstraint("league_id", "name", name="uq_team_league_name"),)
+
+class Player(Base):
+    __tablename__ = "players"
+    id = Column(Integer, primary_key=True, index=True)
+    external_id = Column(String, index=True, nullable=True)
+    league_id = Column(Integer, index=True, nullable=False)
+    first_name = Column(String, nullable=True)
+    last_name = Column(String, nullable=True)
+    team_id = Column(Integer, ForeignKey("teams.id"), nullable=True)
+    team = relationship("Team")
+
+class GamePlayerStat(Base):
+    __tablename__ = "game_player_stats"
+    id = Column(Integer, primary_key=True, index=True)
+    match_id = Column(Integer, index=True, nullable=False)
+    player_id = Column(Integer, ForeignKey("players.id"), nullable=True)
+    league_id = Column(Integer, index=True, nullable=False)
+    pts = Column(Integer, nullable=True)
+    ast = Column(Integer, nullable=True)
+    reb = Column(Integer, nullable=True)
+    stl = Column(Integer, nullable=True)
+    blk = Column(Integer, nullable=True)
+    fg3m = Column(Integer, nullable=True)
+    minutes = Column(String, nullable=True)
+    to = Column(Integer, nullable=True)
+    plus_minus = Column(Integer, nullable=True)
+    player = relationship("Player")
+
+class TeamSeasonStat(Base):
+    __tablename__ = "team_season_stats"
+    id = Column(Integer, primary_key=True, index=True)
+    team_id = Column(Integer, ForeignKey("teams.id"), nullable=False)
+    league_id = Column(Integer, index=True, nullable=False)
+    season = Column(Integer, index=True, nullable=False)
+    ppg = Column(Float, nullable=True)
+    apg = Column(Float, nullable=True)
+    rpg = Column(Float, nullable=True)
+    team = relationship("Team")
+    __table_args__ = (UniqueConstraint("team_id", "season", name="uq_team_season"),)
+    
+    
+class GameTeamStat(Base):
+    __tablename__ = "game_team_stats"
+    id = Column(Integer, primary_key=True)
+    match_id = Column(Integer, index=True, nullable=False)
+    league_id = Column(Integer, index=True, nullable=False)
+    team_id = Column(Integer, ForeignKey("teams.id"), nullable=False)
+    opponent_team_id = Column(Integer, ForeignKey("teams.id"), nullable=False)
+    pts = Column(Integer); ast = Column(Integer); reb = Column(Integer)
+    stl = Column(Integer); blk = Column(Integer); tov = Column(Integer)
+    fgm = Column(Integer); fga = Column(Integer)
+    fg3m = Column(Integer); fg3a = Column(Integer)
+    ftm = Column(Integer); fta = Column(Integer)

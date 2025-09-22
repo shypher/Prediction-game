@@ -448,8 +448,8 @@ def _seed_israel(now: dt.datetime, end: dt.datetime) -> List[Dict[str, Any]]:
 LEAGUE_HANDLERS = {
     League.NBA: _seed_nba,
     League.EUROLEAGUE: _seed_euroleague,
-    League.EUROBASKET: _seed_eurobasket,
-    League.ISRAEL: _seed_israel,
+    #League.EUROBASKET: _seed_eurobasket,
+    #League.ISRAEL: _seed_israel,
 }
 
 

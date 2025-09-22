@@ -1,0 +1,89 @@
+.table-card { padding: 0; }
+
+.table-toolbar {
+  display: flex;
+  display: flex; justify-content: flex-start;
+  gap: 8px;
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.table-toolbar select,
+.table-toolbar input[type="search"] {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.table-wrap {
+  max-height: 65vh; 
+  overflow: auto;
+}
+
+
+table.standings { font-size: 13px; } /* היה 14px */
+.standings thead th,
+.standings tbody td {
+  padding: 8px 6px;
+}
+.standings thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #fff;
+  border-bottom: 1px solid var(--border);
+  padding: 10px 8px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.standings tbody td {
+  border-bottom: 1px solid var(--border);
+  padding: 10px 8px;
+}
+.standings tbody tr:hover {
+  background: #f9fafb;
+}
+
+.sr-only {
+  position: absolute !important;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+}
+.standings tfoot td {
+  border-top: 1px solid var(--border);
+  padding: 10px 8px;
+  background:#fff;
+}
+
+table.standings { min-width: 720px; }
+
+
+.standings th.col-team,
+.standings td.col-team {
+  min-width: 140px;  
+  max-width: 200px;
+}
+.standings td.col-team {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@media (max-width: 480px) {
+  .standings .col-pf,
+  .standings .col-pa { display: none; }
+  .standings { font-size: 13px; }
+  .standings thead th, .standings tbody td { padding: 8px 6px; }
+}
+.stats-toolbar { display: flex; gap: 8px; margin-bottom: 8px; }
+.form-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.pill { display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border-radius:999px; font-weight:600; }
+.pill.win { background:#e8f7ed; color:#137333; }
+.pill.loss{ background:#fdeaea; color:#a50e0e; }
+.kpi { display:flex; align-items:baseline; gap:6px; margin:4px 0; }
+.kpi-value { font-size:20px; font-weight:700; }
+.kpi-label { color:#667085; font-size:12px; }
+
+.team-cell { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.team-logo-sm { width: 18px; height: 18px; object-fit: contain; display: inline-block; }
+.team-dot { width: 10px; height: 10px; border-radius: 999px; background: #c9cdd2; display: inline-block; }
+.team-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: inline-block; max-width: 22ch; }

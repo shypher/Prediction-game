@@ -94,8 +94,8 @@ class RoutePaths:
 class League(str, Enum):
     NBA = "NBA"
     EUROLEAGUE = "EuroLeague"
-    EUROBASKET = "EuroBasket"
-    ISRAEL = "Israel Super League"
+    #EUROBASKET = "EuroBasket"
+    #ISRAEL = "Israel Super League"
 
 class ErrorMessages:
     UNKNOWN_LEAGUE = "Unknown league"
