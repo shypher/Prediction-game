@@ -6,6 +6,8 @@ import { MOCK_GROUPS } from "./groups/MockGroups";
 import ResultsPage from "./games/ResultsPage";
 import TablePage from "./games/TablePage";
 import GamesStatsPage from "./games/GamesStatsPage";
+import GroupsPage from "./groups/CreateGroup";
+import GroupLeaderboardPage from "./groups/GroupLeaderboardPage";
 function Placeholder({ title, note }: { title: string; note?: string }) {
   return (
     <>
@@ -42,12 +44,12 @@ export default function Content() {
       <Route path="/games/results" element={<ResultsPage />} />
       <Route path="/games/results/:matchId" element={<ResultsPage />} />
       <Route path="/games/table" element={<TablePage />} />
-      <Route path="/games/stats" element={<GamesStatsPage leagueId={120} season={2023} />} />
+      <Route path="/games/stats" element={<GamesStatsPage leagueId={120} season={2025} />} />
 
       {/* Groups */}
-      <Route path="/groups" element={<GroupsIndexRoute />} />
+      <Route path="/groups" element={<GroupsPage />} />
+      <Route path="/groups/:groupId" element={<GroupLeaderboardPage />} />
       <Route path="/groups/new" element={<CreateGroup />} />
-      <Route path="/groups/:groupId" element={<GroupOverviewRoute />} />
 
       {/* Admin (ניהול) */}
       <Route path="/admin/users" element={<Placeholder title="Admin: Users" note="Manage users (later)" />} />

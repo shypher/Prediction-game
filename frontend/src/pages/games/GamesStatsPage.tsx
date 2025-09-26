@@ -11,10 +11,22 @@ type TopPlayerRow = {
 type TopTeamRow = { team_id: number; team: string } & Record<string, number>;
 async function jsonOrThrow(res: Response) {
   const ct = res.headers.get("content-type") || "";
-  if (!res.ok || !ct.includes("application/json")) {
+  
+  if (!res.ok) {
     const text = await res.text();
     throw new Error(`HTTP ${res.status} - ${text.slice(0, 200)}`);
   }
+  
+  if (ct.toLowerCase().includes("text/html")) {
+    console.warn("Received HTML instead of JSON, returning empty data");
+    return { teams: [], players: [] };
+  }
+  
+  if (!ct.toLowerCase().includes("application/json")) {
+    const text = await res.text();
+    throw new Error(`Expected JSON but got ${ct} - ${text.slice(0, 200)}`);
+  }
+  
   return res.json();
 }
 
@@ -54,7 +66,7 @@ const METRICS = [
 
 export default function GamesStatsPage({
   leagueId = 120,
-  season,
+  season =2025,
 }: {
   leagueId?: number;
   season: number;

@@ -99,6 +99,10 @@ class League(str, Enum):
 
 class ErrorMessages:
     UNKNOWN_LEAGUE = "Unknown league"
+    NEW_OWNER_MUST_BE_MEMBER = "New owner must be group member"
+    OWNER_ONLY = "owner only"
+    GROUP_NOT_FOUND = "group not found"
+    
     
 class BotID(int, Enum):
     CROWD_MEDIAN = os.getenv("BOT_CROWD_MEDIAN")

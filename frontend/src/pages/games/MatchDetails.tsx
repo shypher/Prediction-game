@@ -3,7 +3,14 @@ import "./Results.css";
 import type { UIMatch } from "./types";
 import { LANG } from "../../i18n";
 import type { MatchFull } from "../../api/match";
-
+import {
+  createOrUpdatePrediction,
+  fetchMyPrediction,
+  fetchMatchPredictionStats,
+  type PredictionOut,
+  type MatchPredictionStats,
+  type PickSide,
+} from "../../api/predictions";
 type Bet = { winner: "home" | "away" | null; spread: number };
 const HOME_ON_LEFT = true;
 
@@ -11,10 +18,10 @@ type PlayerRow = {
   player_id?: number | string;
   first_name?: string;
   last_name?: string;
-  player?: string; 
+  player?: string;
   team_code?: string;
-  team?: string;   
-  minutes?: string | number | null; 
+  team?: string;
+  minutes?: string | number | null;
   pts?: number | null;
   ast?: number | null;
   reb?: number | null;
@@ -23,10 +30,12 @@ type PlayerRow = {
   fg3m?: number | null;
   plus_minus?: number | null;
 };
+
 function normalizeBoxPlayers(raw: any[] | undefined): PlayerRow[] {
   if (!raw) return [];
   return raw.map((p) => {
-    let first = p.first_name, last = p.last_name;
+    let first = p.first_name,
+      last = p.last_name;
     if (!first && !last && typeof p.player === "string") {
       const t = p.player.trim().split(/\s+/);
       first = t[0] || "";
@@ -49,6 +58,7 @@ function normalizeBoxPlayers(raw: any[] | undefined): PlayerRow[] {
     };
   });
 }
+
 type TeamLeaders = {
   pts?: { name: string; value: number } | null;
   reb?: { name: string; value: number } | null;
@@ -63,17 +73,17 @@ function computeGameLeaders(
   homeCode?: string,
   awayCode?: string
 ): { home: TeamLeaders; away: TeamLeaders } {
-  // קבץ לפי קוד קבוצה
   const byTeam = new Map<string, PlayerRow[]>();
   for (const p of players) {
     const k = (p.team_code || "UNK").toUpperCase();
     if (!byTeam.has(k)) byTeam.set(k, []);
     byTeam.get(k)!.push(p);
   }
-  // אם אין קודים מה־assets, נבחר שני קודים הנפוצים ביותר
   const codes = Array.from(byTeam.keys());
   if (!homeCode || !awayCode) {
-    const sorted = codes.sort((a, b) => (byTeam.get(b)!.length - byTeam.get(a)!.length));
+    const sorted = codes.sort(
+      (a, b) => byTeam.get(b)!.length - byTeam.get(a)!.length
+    );
     homeCode = homeCode || sorted[0];
     awayCode = awayCode || sorted[1];
   }
@@ -84,12 +94,17 @@ function computeGameLeaders(
     let best: PlayerRow | null = null;
     for (const p of arr) {
       const val = (p[key] as number | null) ?? -Infinity;
-      const bestVal = best ? ((best[key] as number | null) ?? -Infinity) : -Infinity;
+      const bestVal = best
+        ? (best[key] as number | null) ?? -Infinity
+        : -Infinity;
       if (val > bestVal) best = p;
     }
     if (!best) return null;
     const value = (best[key] as number | null) ?? 0;
-    const name = `${best.first_name ?? ""} ${best.last_name ?? ""}`.trim() || (best.player as string) || "";
+    const name =
+      `${best.first_name ?? ""} ${best.last_name ?? ""}`.trim() ||
+      (best.player as string) ||
+      "";
     return { name, value };
   }
 
@@ -130,33 +145,40 @@ function StatLine({
     <div className="card">
       <strong>{title}</strong>
       <ul>
-        {item("PPG")}
-        {item("RPG")}
-        {item("APG")}
+        {/* Season averages */}
+        {item("ppg", "PPG")}
+        {item("apg", "APG")}
+        {item("rpg", "RPG")}
+        {item("spg", "SPG")}
+        {item("bpg", "BPG")}
+        {item("tpm", "3PM")}
+
+        {/* Game stats */}
         {item("PTS")}
-        {item("REB")}
         {item("AST")}
+        {item("REB")}
         {item("ST")}
         {item("BLK")}
         {item("TO")}
+        {item("3PTM")}
+
+        {/* Shooting percentages */}
         {item("FG%", "FG%")}
         {item("3P%", "3P%")}
         {item("FT%", "FT%")}
-        {item("3PTM")}
-        {item("PPG".toLowerCase())}
-        {item("RPG".toLowerCase())}
-        {item("APG".toLowerCase())}
       </ul>
     </div>
   );
 }
+
 export default function MatchDetails({
   match,
   stats,
   prediction,
   onChange,
   matchFull,
-  homeLogoUrl, awayLogoUrl,
+  homeLogoUrl,
+  awayLogoUrl,
 }: {
   match: UIMatch;
   stats?: any;
@@ -166,7 +188,9 @@ export default function MatchDetails({
   homeLogoUrl?: string;
   awayLogoUrl?: string;
 }) {
-  const [bet, setBet] = useState<Bet>(prediction ?? { winner: null, spread: 0 });
+  const [bet, setBet] = useState<Bet>(
+    prediction ?? { winner: null, spread: 0 }
+  );
   const [pickerOpen, setPickerOpen] = useState(false);
 
   useEffect(() => {
@@ -179,20 +203,33 @@ export default function MatchDetails({
     onChange?.(next);
   }
 
-  const effectiveStatus = (matchFull?.match?.status || match.status || "scheduled").toLowerCase();
-  const isStarted = effectiveStatus !== "scheduled" && effectiveStatus !== "postponed";
+  const effectiveStatus = (
+    matchFull?.match?.status ||
+    match.status ||
+    "scheduled"
+  ).toLowerCase();
+  const isStarted =
+    effectiveStatus !== "scheduled" && effectiveStatus !== "postponed";
   const statusLabel =
-    effectiveStatus === "live" ? "LIVE" :
-    effectiveStatus === "final" ? "FINAL" : "UPCOMING";
+    effectiveStatus === "live"
+      ? "LIVE"
+      : effectiveStatus === "final"
+      ? "FINAL"
+      : "UPCOMING";
 
   const centerWhen = useMemo(() => {
     const d = new Date(match.date);
-    const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const time = d.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
     const day = d.toLocaleDateString(LANG === "he" ? "he-IL" : undefined);
     return `${day} • ${time}`;
   }, [match.date]);
 
-  const liveScoreText = match.score ? `${match.score.home} : ${match.score.away}` : "";
+  const liveScoreText = match.score
+    ? `${match.score.home} : ${match.score.away}`
+    : "";
   const homeLogoRight = HOME_ON_LEFT;
   const awayLogoRight = !HOME_ON_LEFT;
   const homeLogo = homeLogoUrl || "";
@@ -210,40 +247,118 @@ export default function MatchDetails({
   const homeCode = matchFull?.assets?.home?.abbreviation as string | undefined;
   const awayCode = matchFull?.assets?.away?.abbreviation as string | undefined;
   const boxPlayers = normalizeBoxPlayers(rawPlayers);
-
+  const [myPred, setMyPred] = useState<PredictionOut | null>(null);
+  const [pStats, setPStats] = useState<MatchPredictionStats | null>(null);
+  const [predLoading, setPredLoading] = useState(false);
+  const [predErr, setPredErr] = useState<string | null>(null);
+  const [pick, setPick] = useState<PickSide>(null);
+  const [margin, setMargin] = useState<number>(0);
+  useEffect(() => {
+    if (!match) return;
+    const ac = new AbortController();
+    setPredErr(null);
+    setPredLoading(true);
+    Promise.all([
+      fetchMyPrediction(match.id, ac.signal).catch(() => null),
+      fetchMatchPredictionStats(match.id, ac.signal).catch(() => null),
+    ])
+      .then(([mine, stats]) => {
+        setMyPred(mine);
+        setPStats(stats);
+        if (mine) {
+          setPick(mine.pick);
+          setMargin(mine.margin || 0);
+        } else {
+          setPick(null);
+          setMargin(0);
+        }
+      })
+      .finally(() => setPredLoading(false));
+    return () => ac.abort();
+  }, [match?.id]);
+  async function submitPrediction() {
+    if (!match) return;
+    setPredLoading(true);
+    setPredErr(null);
+    try {
+      const saved = await createOrUpdatePrediction({
+        match_id: match.id,
+        pick,
+        margin: Math.max(0, Math.floor(Number(margin) || 0)),
+      });
+      setMyPred(saved);
+      const s = await fetchMatchPredictionStats(match.id).catch(() => null);
+      if (s) setPStats(s);
+    } catch (e: any) {
+      setPredErr(e?.message || "Failed to save prediction");
+    } finally {
+      setPredLoading(false);
+    }
+  }
   const gameLeaders = useMemo(
-    () => (isStarted ? computeGameLeaders(boxPlayers, homeCode, awayCode) : null),
+    () =>
+      isStarted ? computeGameLeaders(boxPlayers, homeCode, awayCode) : null,
     [isStarted, boxPlayers, homeCode, awayCode]
-    );  
+  );
   const mergedStats = useMemo(() => {
     const base = stats || {};
     const mapLeaders = (l: any) =>
-      l ? {
-        points:  l.pts ? { name: l.pts.player, value: l.pts.value } : null,
-        rebounds:l.reb ? { name: l.reb.player, value: l.reb.value } : null,
-        assists: l.ast ? { name: l.ast.player, value: l.ast.value } : null,
-      } : undefined;
+      l
+        ? {
+            points: l.pts ? { name: l.pts.player, value: l.pts.value } : null,
+            rebounds: l.reb ? { name: l.reb.player, value: l.reb.value } : null,
+            assists: l.ast ? { name: l.ast.player, value: l.ast.value } : null,
+            steals: l.st ? { name: l.st.player, value: l.st.value } : null,
+            blocks: l.blk ? { name: l.blk.player, value: l.blk.value } : null,
+            threes: l.fg3m
+              ? { name: l.fg3m.player, value: l.fg3m.value }
+              : null,
+          }
+        : undefined;
 
     return {
       ...base,
-      homeTeamStats: hs ? { ppg: hs.ppg, rpg: hs.rpg, apg: hs.apg } : base.homeTeamStats,
-      awayTeamStats: as ? { ppg: as.ppg, rpg: as.rpg, apg: as.apg } : base.awayTeamStats,
+      homeTeamStats: hs
+        ? {
+            ppg: hs.ppg,
+            rpg: hs.rpg,
+            apg: hs.apg,
+            spg: hs.spg,
+            bpg: hs.bpg,
+            tpm: hs.tpm,
+          }
+        : base.homeTeamStats,
+      awayTeamStats: as
+        ? {
+            ppg: as.ppg,
+            rpg: as.rpg,
+            apg: as.apg,
+            spg: as.spg,
+            bpg: as.bpg,
+            tpm: as.tpm,
+          }
+        : base.awayTeamStats,
       homeLeaders: hl ? mapLeaders(hl) : base.homeLeaders,
       awayLeaders: al ? mapLeaders(al) : base.awayLeaders,
     };
   }, [stats, hs, as, hl, al]);
 
-  const hasTeamStats = Boolean(mergedStats?.homeTeamStats && mergedStats?.awayTeamStats);
-  const hasLeaders   = Boolean(mergedStats?.homeLeaders && mergedStats?.awayLeaders);
+  const hasTeamStats = Boolean(
+    mergedStats?.homeTeamStats && mergedStats?.awayTeamStats
+  );
+  const hasLeaders = Boolean(
+    mergedStats?.homeLeaders && mergedStats?.awayLeaders
+  );
 
   const teamGame = matchFull?.team_game || null;
 
-
-    return (
+  return (
     <div className="match-details">
       <div className="details-main">
         <div className="details-meta">
-          <span className={`chip-status ${effectiveStatus}`}>{statusLabel}</span>
+          <span className={`chip-status ${effectiveStatus}`}>
+            {statusLabel}
+          </span>
           <span className="chip-datetime">{centerWhen}</span>
         </div>
 
@@ -253,8 +368,8 @@ export default function MatchDetails({
             name={match.home.name}
             logoUrl={homeLogo}
             record={stats?.homeRecord ?? "-"}
-            selected={bet.winner === "home"}
-            onPick={() => setAndNotify({ ...bet, winner: bet.winner === "home" ? null : "home" })}
+            selected={pick === "home"}
+            onPick={() => setPick("home")}
             logoRight={homeLogoRight}
           />
 
@@ -265,13 +380,15 @@ export default function MatchDetails({
               aria-expanded={pickerOpen}
               title="Set spread"
             >
-              {bet.winner ? `My pick: ${bet.winner.toUpperCase()} +${bet.spread}` : "Pick winner & spread"}
+              {pick
+                ? `My pick: ${pick.toUpperCase()} +${margin}`
+                : "Pick winner & spread"}
             </button>
 
             {pickerOpen && (
               <SpreadPicker
-                value={bet.spread}
-                onChange={(v) => setAndNotify({ ...bet, spread: v })}
+                value={margin}
+                onChange={(v) => setMargin(v)}
                 onClose={() => setPickerOpen(false)}
               />
             )}
@@ -284,42 +401,150 @@ export default function MatchDetails({
             name={match.away.name}
             logoUrl={awayLogo}
             record={stats?.awayRecord ?? "-"}
-            selected={bet.winner === "away"}
-            onPick={() => setAndNotify({ ...bet, winner: bet.winner === "away" ? null : "away" })}
+            selected={pick === "away"}
+            onPick={() => setPick("away")}
             logoRight={awayLogoRight}
           />
         </div>
+        <div className="card" style={{ display: "grid", gap: 8 }}>
+          <strong>Community Predictions</strong>
+          {!pStats && <div className="subtle">No data yet.</div>}
+          {pStats && (
+            <>
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                <div>
+                  Total: <b>{pStats.total}</b>
+                </div>
+                <div>
+                  Favorite: <b>{pStats.favorite ?? "-"}</b>
+                </div>
+                <div>
+                  Confidence: <b>{pStats.confidence_pct ?? "-"}%</b>
+                </div>
+                <div>
+                  Avg margin: <b>{pStats.avg_signed_margin ?? "-"}</b>
+                </div>
+                <div>
+                  Median: <b>{pStats.median_signed_margin ?? "-"}</b>
+                </div>
+              </div>
 
-        {/* --- PRE-GAME: סטטיסטיקות קבוצה עשירות + מובילים עד עכשיו --- */}
+              {!!pStats.margin_histogram?.length && (
+                <table className="table" style={{ marginTop: 8 }}>
+                  <thead>
+                    <tr>
+                      <th>Range</th>
+                      <th style={{ textAlign: "right" }}>Count</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pStats.margin_histogram.map((b) => (
+                      <tr key={b.range}>
+                        <td>{b.range}</td>
+                        <td style={{ textAlign: "right" }}>{b.count}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </>
+          )}
+        </div>
         {!isStarted && (
           <>
             <div className="stats-grid" style={{ marginTop: 12 }}>
-              <StatLine title={`${match.home.name} — Team stats to date`} s={homeSummary as any} />
-              <StatLine title={`${match.away.name} — Team stats to date`} s={awaySummary as any} />
+              <StatLine
+                title={`${match.home.name} — Season stats`}
+                s={homeSummary as any}
+              />
+              <StatLine
+                title={`${match.away.name} — Season stats`}
+                s={awaySummary as any}
+              />
             </div>
 
             {(homeLeadersPre || awayLeadersPre) && (
               <div className="leaders-grid" style={{ marginTop: 12 }}>
                 <div className="card">
-                  <strong>{match.home.name} — Leaders to date</strong>
+                  <strong>{match.home.name} — Season leaders</strong>
                   <ul>
-                    {homeLeadersPre?.pts && <li>PTS: {homeLeadersPre.pts.player} ({homeLeadersPre.pts.value})</li>}
-                    {homeLeadersPre?.reb && <li>REB: {homeLeadersPre.reb.player} ({homeLeadersPre.reb.value})</li>}
-                    {homeLeadersPre?.ast && <li>AST: {homeLeadersPre.ast.player} ({homeLeadersPre.ast.value})</li>}
-                    {homeLeadersPre?.st  && <li>ST:  {homeLeadersPre.st.player}  ({homeLeadersPre.st.value})</li>}
-                    {homeLeadersPre?.blk && <li>BLK: {homeLeadersPre.blk.player} ({homeLeadersPre.blk.value})</li>}
-                    {homeLeadersPre?.fg3m && <li>3PTM: {homeLeadersPre.fg3m.player} ({homeLeadersPre.fg3m.value})</li>}
+                    {homeLeadersPre?.pts && (
+                      <li>
+                        PTS: {homeLeadersPre.pts.player} (
+                        {homeLeadersPre.pts.value})
+                      </li>
+                    )}
+                    {homeLeadersPre?.reb && (
+                      <li>
+                        REB: {homeLeadersPre.reb.player} (
+                        {homeLeadersPre.reb.value})
+                      </li>
+                    )}
+                    {homeLeadersPre?.ast && (
+                      <li>
+                        AST: {homeLeadersPre.ast.player} (
+                        {homeLeadersPre.ast.value})
+                      </li>
+                    )}
+                    {homeLeadersPre?.st && (
+                      <li>
+                        STL: {homeLeadersPre.st.player} (
+                        {homeLeadersPre.st.value})
+                      </li>
+                    )}
+                    {homeLeadersPre?.blk && (
+                      <li>
+                        BLK: {homeLeadersPre.blk.player} (
+                        {homeLeadersPre.blk.value})
+                      </li>
+                    )}
+                    {homeLeadersPre?.fg3m && (
+                      <li>
+                        3PTM: {homeLeadersPre.fg3m.player} (
+                        {homeLeadersPre.fg3m.value})
+                      </li>
+                    )}
                   </ul>
                 </div>
                 <div className="card">
-                  <strong>{match.away.name} — Leaders to date</strong>
+                  <strong>{match.away.name} — Season leaders</strong>
                   <ul>
-                    {awayLeadersPre?.pts && <li>PTS: {awayLeadersPre.pts.player} ({awayLeadersPre.pts.value})</li>}
-                    {awayLeadersPre?.reb && <li>REB: {awayLeadersPre.reb.player} ({awayLeadersPre.reb.value})</li>}
-                    {awayLeadersPre?.ast && <li>AST: {awayLeadersPre.ast.player} ({awayLeadersPre.ast.value})</li>}
-                    {awayLeadersPre?.st  && <li>ST:  {awayLeadersPre.st.player}  ({awayLeadersPre.st.value})</li>}
-                    {awayLeadersPre?.blk && <li>BLK: {awayLeadersPre.blk.player} ({awayLeadersPre.blk.value})</li>}
-                    {awayLeadersPre?.fg3m && <li>3PTM: {awayLeadersPre.fg3m.player} ({awayLeadersPre.fg3m.value})</li>}
+                    {awayLeadersPre?.pts && (
+                      <li>
+                        PTS: {awayLeadersPre.pts.player} (
+                        {awayLeadersPre.pts.value})
+                      </li>
+                    )}
+                    {awayLeadersPre?.reb && (
+                      <li>
+                        REB: {awayLeadersPre.reb.player} (
+                        {awayLeadersPre.reb.value})
+                      </li>
+                    )}
+                    {awayLeadersPre?.ast && (
+                      <li>
+                        AST: {awayLeadersPre.ast.player} (
+                        {awayLeadersPre.ast.value})
+                      </li>
+                    )}
+                    {awayLeadersPre?.st && (
+                      <li>
+                        STL: {awayLeadersPre.st.player} (
+                        {awayLeadersPre.st.value})
+                      </li>
+                    )}
+                    {awayLeadersPre?.blk && (
+                      <li>
+                        BLK: {awayLeadersPre.blk.player} (
+                        {awayLeadersPre.blk.value})
+                      </li>
+                    )}
+                    {awayLeadersPre?.fg3m && (
+                      <li>
+                        3PTM: {awayLeadersPre.fg3m.player} (
+                        {awayLeadersPre.fg3m.value})
+                      </li>
+                    )}
                   </ul>
                 </div>
               </div>
@@ -327,13 +552,18 @@ export default function MatchDetails({
           </>
         )}
 
-        {/* --- IN/POST-GAME: For/Against, מובילי משחק בפועל, בוקס-סקור --- */}
         {isStarted && (
           <>
             {teamGame && (
               <div className="stats-grid" style={{ marginTop: 12 }}>
-                <StatLine title={`${match.home.name} — Game stats (For)`} s={teamGame.home?.for as any} />
-                <StatLine title={`${match.away.name} — Game stats (For)`} s={teamGame.away?.for as any} />
+                <StatLine
+                  title={`${match.home.name} — Game stats (For)`}
+                  s={teamGame.home?.for as any}
+                />
+                <StatLine
+                  title={`${match.away.name} — Game stats (For)`}
+                  s={teamGame.away?.for as any}
+                />
               </div>
             )}
 
@@ -342,32 +572,98 @@ export default function MatchDetails({
                 <div className="card">
                   <strong>{match.home.name} — Game leaders</strong>
                   <ul>
-                    {gameLeaders.home.pts && <li>PTS: {gameLeaders.home.pts.name} ({gameLeaders.home.pts.value})</li>}
-                    {gameLeaders.home.reb && <li>REB: {gameLeaders.home.reb.name} ({gameLeaders.home.reb.value})</li>}
-                    {gameLeaders.home.ast && <li>AST: {gameLeaders.home.ast.name} ({gameLeaders.home.ast.value})</li>}
-                    {gameLeaders.home.stl && <li>ST:  {gameLeaders.home.stl.name} ({gameLeaders.home.stl.value})</li>}
-                    {gameLeaders.home.blk && <li>BLK: {gameLeaders.home.blk.name} ({gameLeaders.home.blk.value})</li>}
-                    {gameLeaders.home.fg3m && <li>3PTM: {gameLeaders.home.fg3m.name} ({gameLeaders.home.fg3m.value})</li>}
+                    {gameLeaders.home.pts && (
+                      <li>
+                        PTS: {gameLeaders.home.pts.name} (
+                        {gameLeaders.home.pts.value})
+                      </li>
+                    )}
+                    {gameLeaders.home.reb && (
+                      <li>
+                        REB: {gameLeaders.home.reb.name} (
+                        {gameLeaders.home.reb.value})
+                      </li>
+                    )}
+                    {gameLeaders.home.ast && (
+                      <li>
+                        AST: {gameLeaders.home.ast.name} (
+                        {gameLeaders.home.ast.value})
+                      </li>
+                    )}
+                    {gameLeaders.home.stl && (
+                      <li>
+                        STL: {gameLeaders.home.stl.name} (
+                        {gameLeaders.home.stl.value})
+                      </li>
+                    )}
+                    {gameLeaders.home.blk && (
+                      <li>
+                        BLK: {gameLeaders.home.blk.name} (
+                        {gameLeaders.home.blk.value})
+                      </li>
+                    )}
+                    {gameLeaders.home.fg3m && (
+                      <li>
+                        3PTM: {gameLeaders.home.fg3m.name} (
+                        {gameLeaders.home.fg3m.value})
+                      </li>
+                    )}
                   </ul>
                 </div>
                 <div className="card">
                   <strong>{match.away.name} — Game leaders</strong>
                   <ul>
-                    {gameLeaders.away.pts && <li>PTS: {gameLeaders.away.pts.name} ({gameLeaders.away.pts.value})</li>}
-                    {gameLeaders.away.reb && <li>REB: {gameLeaders.away.reb.name} ({gameLeaders.away.reb.value})</li>}
-                    {gameLeaders.away.ast && <li>AST: {gameLeaders.away.ast.name} ({gameLeaders.away.ast.value})</li>}
-                    {gameLeaders.away.stl && <li>ST:  {gameLeaders.away.stl.name} ({gameLeaders.away.stl.value})</li>}
-                    {gameLeaders.away.blk && <li>BLK: {gameLeaders.away.blk.name} ({gameLeaders.away.blk.value})</li>}
-                    {gameLeaders.away.fg3m && <li>3PTM: {gameLeaders.away.fg3m.name} ({gameLeaders.away.fg3m.value})</li>}
+                    {gameLeaders.away.pts && (
+                      <li>
+                        PTS: {gameLeaders.away.pts.name} (
+                        {gameLeaders.away.pts.value})
+                      </li>
+                    )}
+                    {gameLeaders.away.reb && (
+                      <li>
+                        REB: {gameLeaders.away.reb.name} (
+                        {gameLeaders.away.reb.value})
+                      </li>
+                    )}
+                    {gameLeaders.away.ast && (
+                      <li>
+                        AST: {gameLeaders.away.ast.name} (
+                        {gameLeaders.away.ast.value})
+                      </li>
+                    )}
+                    {gameLeaders.away.stl && (
+                      <li>
+                        STL: {gameLeaders.away.stl.name} (
+                        {gameLeaders.away.stl.value})
+                      </li>
+                    )}
+                    {gameLeaders.away.blk && (
+                      <li>
+                        BLK: {gameLeaders.away.blk.name} (
+                        {gameLeaders.away.blk.value})
+                      </li>
+                    )}
+                    {gameLeaders.away.fg3m && (
+                      <li>
+                        3PTM: {gameLeaders.away.fg3m.name} (
+                        {gameLeaders.away.fg3m.value})
+                      </li>
+                    )}
                   </ul>
                 </div>
               </div>
             )}
 
             {boxPlayers.length > 0 && (
-              <div className="card" style={{ marginTop: 12, overflowX: "auto" }}>
+              <div
+                className="card"
+                style={{ marginTop: 12, overflowX: "auto" }}
+              >
                 <strong>Box Score</strong>
-                <table className="table compact" style={{ width: "100%", marginTop: 8 }}>
+                <table
+                  className="table compact"
+                  style={{ width: "100%", marginTop: 8 }}
+                >
                   <thead>
                     <tr>
                       <th style={{ textAlign: "left" }}>Player</th>
@@ -386,7 +682,11 @@ export default function MatchDetails({
                     {boxPlayers.map((p, idx) => (
                       <tr key={`${p.player_id ?? idx}`}>
                         <td style={{ textAlign: "left" }}>
-                          {[(p.first_name || ""), (p.last_name || "")].join(" ").trim() || (p.player || "")}
+                          {[p.first_name || "", p.last_name || ""]
+                            .join(" ")
+                            .trim() ||
+                            p.player ||
+                            ""}
                         </td>
                         <td>{p.team_code ?? "-"}</td>
                         <td>{p.minutes ?? "-"}</td>
@@ -411,7 +711,13 @@ export default function MatchDetails({
 }
 
 function TeamCard({
-  side, name, logoUrl, record, selected, onPick, logoRight,
+  side,
+  name,
+  logoUrl,
+  record,
+  selected,
+  onPick,
+  logoRight,
 }: {
   side: "home" | "away";
   name: string;
@@ -442,7 +748,9 @@ function TeamCard({
 }
 
 function SpreadPicker({
-  value, onChange, onClose,
+  value,
+  onChange,
+  onClose,
 }: {
   value: number;
   onChange: (v: number) => void;
@@ -454,24 +762,46 @@ function SpreadPicker({
   useEffect(() => setLocal(value), [value]);
 
   useEffect(() => {
-    const el = listRef.current?.querySelector<HTMLButtonElement>(".picker-item.active");
+    const el = listRef.current?.querySelector<HTMLButtonElement>(
+      ".picker-item.active"
+    );
     el?.scrollIntoView({ block: "center" });
   }, []);
 
   const clamp = (n: number) => Math.max(0, Math.min(99, n));
-  const commit = (n: number) => { onChange(clamp(n)); onClose(); };
+  const commit = (n: number) => {
+    onChange(clamp(n));
+    onClose();
+  };
 
   function onKey(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === "ArrowUp")   { e.preventDefault(); setLocal((v) => clamp(v + 1)); }
-    if (e.key === "ArrowDown") { e.preventDefault(); setLocal((v) => clamp(v - 1)); }
-    if (e.key === "Enter")     { e.preventDefault(); commit(local); }
-    if (e.key === "Escape")    { e.preventDefault(); onClose(); }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setLocal((v) => clamp(v + 1));
+    }
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setLocal((v) => clamp(v - 1));
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commit(local);
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      onClose();
+    }
   }
 
   const items = Array.from({ length: 100 }, (_, i) => i);
 
   return (
-    <div className="picker-overlay" onClick={onClose} role="dialog" aria-modal="true">
+    <div
+      className="picker-overlay"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+    >
       <div className="picker" onClick={(e) => e.stopPropagation()}>
         <div className="picker-controls">
           <input
@@ -485,9 +815,21 @@ function SpreadPicker({
             aria-label="Spread"
           />
           <div className="picker-actions">
-            <button className="itembtn" onClick={() => setLocal((v) => clamp(v - 1))}>−</button>
-            <button className="itembtn" onClick={() => setLocal((v) => clamp(v + 1))}>+</button>
-            <button className="itembtn" onClick={() => commit(local)}>Set</button>
+            <button
+              className="itembtn"
+              onClick={() => setLocal((v) => clamp(v - 1))}
+            >
+              −
+            </button>
+            <button
+              className="itembtn"
+              onClick={() => setLocal((v) => clamp(v + 1))}
+            >
+              +
+            </button>
+            <button className="itembtn" onClick={() => commit(local)}>
+              Set
+            </button>
           </div>
         </div>
 

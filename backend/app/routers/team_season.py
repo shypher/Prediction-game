@@ -41,16 +41,20 @@ def top_player(db: Session, team_id: int, league_id: int, season: int, col):
     pid, fn, ln, v = q
     return {"player_id": pid, "player": f"{fn or ''} {ln or ''}".strip(), "value": int(v or 0)}
 
+
 @router.get("/team-season")
 def team_season_summary(league_id: int = Query(...), season: int = Query(...), db: Session = Depends(get_db)):
     agg = (
         db.query(
-            Team.id.label("team_id"),
-            Team.name.label("team"),
+            Team.id.label("team_id"), Team.name.label("team"),
             func.sum(GamePlayerStat.pts).label("total_pts"),
             func.sum(GamePlayerStat.ast).label("total_ast"),
             func.sum(GamePlayerStat.reb).label("total_reb"),
-            func.count(distinct(Match.id)).label("games")
+            func.sum(GamePlayerStat.stl).label("total_stl"),
+            func.sum(GamePlayerStat.blk).label("total_blk"),
+            func.sum(GamePlayerStat.fg3m).label("total_fg3m"),
+            func.sum(GamePlayerStat.plus_minus).label("plus_minus"),
+            func.count(distinct(Match.id)).label("games"),
         )
         .join(Player, Player.team_id == Team.id)
         .join(GamePlayerStat, GamePlayerStat.player_id == Player.id)
@@ -66,17 +70,24 @@ def team_season_summary(league_id: int = Query(...), season: int = Query(...), d
         ppg = float(row.total_pts or 0) / games if games else 0.0
         apg = float(row.total_ast or 0) / games if games else 0.0
         rpg = float(row.total_reb or 0) / games if games else 0.0
+        spg = float(row.total_stl or 0) / games if games else 0.0
+        bpg = float(row.total_blk or 0) / games if games else 0.0
+        tpm = float(row.total_fg3m or 0) / games if games else 0.0
+
         leaders = {
             "pts": top_player(db, row.team_id, league_id, season, GamePlayerStat.pts),
             "ast": top_player(db, row.team_id, league_id, season, GamePlayerStat.ast),
-            "reb": top_player(db, row.team_id, league_id, season, GamePlayerStat.reb)
+            "reb": top_player(db, row.team_id, league_id, season, GamePlayerStat.reb),
+            "st" : top_player(db, row.team_id, league_id, season, GamePlayerStat.stl),
+            "blk": top_player(db, row.team_id, league_id, season, GamePlayerStat.blk),
+            "fg3m": top_player(db, row.team_id, league_id, season, GamePlayerStat.fg3m),
         }
+
         out.append({
             "team_id": row.team_id,
             "team": row.team,
-            "ppg": round(ppg, 2),
-            "apg": round(apg, 2),
-            "rpg": round(rpg, 2),
+            "ppg": round(ppg, 2), "apg": round(apg, 2), "rpg": round(rpg, 2),
+            "spg": round(spg, 2), "bpg": round(bpg, 2), "tpm": round(tpm, 2),
             "leaders": leaders
         })
     return {"league_id": league_id, "season": season, "teams": out}
@@ -105,6 +116,7 @@ VALID_PLAYER_METRICS = {
     "blk": ("blk", GamePlayerStat.blk),
     "fg3m": ("fg3m", GamePlayerStat.fg3m),
 }
+
 @router.get("/top-players")
 def top_players(
     league_id: int = Query(...),
@@ -117,6 +129,7 @@ def top_players(
         raise HTTPException(400, f"invalid metric: {metric}")
     key, col = VALID_PLAYER_METRICS[metric]
 
+    # שאילתה עם ממוצע למשחק
     q = (
         db.query(
             Player.id.label("player_id"),
@@ -124,27 +137,34 @@ def top_players(
             Player.last_name,
             Team.id.label("team_id"),
             Team.name.label("team"),
-            func.sum(col).label("v"),
+            func.sum(col).label("total"),
+            func.count(distinct(Match.id)).label("games"),
         )
         .join(GamePlayerStat, GamePlayerStat.player_id == Player.id)
         .join(Match, Match.id == GamePlayerStat.match_id)
         .outerjoin(Team, Team.id == Player.team_id)
         .filter(GamePlayerStat.league_id == league_id, Match.season == season)
         .group_by(Player.id, Team.id, Team.name, Player.first_name, Player.last_name)
-        .order_by(func.sum(col).desc())
+        .having(func.count(distinct(Match.id)) > 0)  # רק שחקנים שיש להם משחקים
+        .order_by((func.sum(col) / func.count(distinct(Match.id))).desc())
         .limit(limit)
     ).all()
 
     out = []
     for row in q:
+        games = int(row.games or 0)
+        total = float(row.total or 0)
+        avg = total / games if games > 0 else 0.0
+        
         out.append({
             "player_id": row.player_id,
             "player": f"{row.first_name or ''} {row.last_name or ''}".strip(),
             "team_id": row.team_id,
             "team": row.team,
-            key: int(row.v or 0),
+            key: round(avg, 1),  
         })
     return {"league_id": league_id, "season": season, "metric": metric, "players": out}
+
 
 
 @router.get("/top-teams")
@@ -159,26 +179,33 @@ def top_teams(
         raise HTTPException(400, f"invalid metric: {metric}")
     key, col = VALID_PLAYER_METRICS[metric]
 
+    # שאילתה עם ממוצע למשחק לקבוצות
     q = (
         db.query(
             Team.id.label("team_id"),
             Team.name.label("team"),
-            func.sum(col).label("v"),
+            func.sum(col).label("total"),
+            func.count(distinct(Match.id)).label("games"),
         )
         .join(Player, Player.team_id == Team.id)
         .join(GamePlayerStat, GamePlayerStat.player_id == Player.id)
         .join(Match, Match.id == GamePlayerStat.match_id)
         .filter(GamePlayerStat.league_id == league_id, Match.season == season)
         .group_by(Team.id, Team.name)
-        .order_by(func.sum(col).desc())
+        .having(func.count(distinct(Match.id)) > 0)  # רק קבוצות שיש להן משחקים
+        .order_by((func.sum(col) / func.count(distinct(Match.id))).desc())
         .limit(limit)
     ).all()
 
     out = []
     for row in q:
+        games = int(row.games or 0)
+        total = float(row.total or 0)
+        avg = total / games if games > 0 else 0.0
+        
         out.append({
             "team_id": row.team_id,
             "team": row.team,
-            key: int(row.v or 0),
+            key: round(avg, 1),
         })
     return {"league_id": league_id, "season": season, "metric": metric, "teams": out}

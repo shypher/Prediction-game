@@ -108,3 +108,12 @@ class StandingRow(BaseModel):
     pa: int
     diff: int
     rank: int
+    
+class MyGroupOut(BaseModel):
+    id: int
+    name: str
+    role: str             
+    owner_id: int
+    is_private: bool
+    invite_code: Optional[str] = None
+    created_at: Optional[datetime] = None

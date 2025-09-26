@@ -6,7 +6,7 @@ import os
 from ..core import database
 from sqlalchemy import text
 from statistics import median
-from sqlalchemy import func, case, text
+from sqlalchemy import func, case, text, or_
 from sqlalchemy.exc import IntegrityError
 
 from ..db import models, schemas
@@ -32,14 +32,6 @@ def get_db():
     finally:
         db.close()
         
-# def current_user_id(x_user_id: Optional[str] = Header(None)) -> str:
-#     if not x_user_id:
-#         raise HTTPException(401, "Unauthorized: provide X-User-Id for now")
-#     return x_user_id
-
-
-
-
 
 @router.post("", response_model=schemas.PredictionOut)
 def create_or_update_prediction(
@@ -188,57 +180,22 @@ def settleGame(match_id: int, db: Session = Depends(get_db)):
         "scores": {"home": home_score, "away": away_score},
         "status": status,
     }
-    ####### ----------------- MORE CODE AFTER ------------------------########
-    #Simpler, less effective, if the above doesn't work O(1) vs O(N)
-    #predictions =  db.query(models.Prediction).filter(models.Prediction.match_id == match_id).all()
-    # updated_now = 0 
-    # for pred in predictions:
-    #     if pred.is_final:
-    #         continue
-    #     if pred.pick is None or pred.margin == 0:
-    #         pred.points_awarded = 0
-    #         pred.is_final = True
-    #         updated_now += 1
-    #         continue
-    #     dist = abs(real_margin - pred.margin)
-    #     if pred.pick != winner:
-    #         pred.points_awarded =-2
-    #     elif dist == 0:
-    #         pred.points_awarded = 8
-    #     elif dist == 1:
-    #         pred.points_awarded = 6
-    #     elif dist == 2:   
-    #         pred.points_awarded = 5
-    #     elif dist == 3:   
-    #         pred.points_awarded = 4
-    #     else:
-    #         pred.points_awarded = 3
-    #     pred.is_final = True
-    #     updated_now += 1
-    # db.commit()
-    # settled_total = sum(1 for p in predictions if p.is_final)
-    # return {
-    #     "match_id": match_id,
-    #     "updated_now": updated_now,         # settled in THIS call
-    #     "settled_total": settled_total,     # all predictions now final
-    #     "actual_winner": winner,
-    #     "actual_margin": real_margin,
-    #     "scores": {"home": home_score, "away": away_score},
-    #     "status": status,
-    # }
-    
+
     
 
-@router.get("/predictions/by-match/{match_id}")
+
 def get_match_stats(match_id: int, db: Session = Depends(get_db)):
     signed_margin = case(
         (models.Prediction.pick == "home", models.Prediction.margin),
         (models.Prediction.pick == "away", -models.Prediction.margin),
     )
 
-    base = db.query(models.Prediction).filter(
-        models.Prediction.match_id == match_id,
-        models.Prediction.margin >= 1
+    base_filters = _human_only_filters(match_id)
+
+    base = (
+        db.query(models.Prediction)
+        .join(models.User, models.User.id == models.Prediction.user_id)
+        .filter(*base_filters)
     )
 
     total = base.count()
@@ -251,66 +208,77 @@ def get_match_stats(match_id: int, db: Session = Depends(get_db)):
             "avg_signed_margin": None,
             "median_signed_margin": None,
             "margin_histogram": [
-                {"range":"-10-","count":0},
-                {"range":"-9--7","count":0},
-                {"range":"-6--4","count":0},
-                {"range":"-3--1","count":0},
-                {"range":"1-3","count":0},
-                {"range":"4-6","count":0},
-                {"range":"7-9","count":0},
-                {"range":"10+","count":0},
+                {"range": "-10-", "count": 0},
+                {"range": "-9--7", "count": 0},
+                {"range": "-6--4", "count": 0},
+                {"range": "-3--1", "count": 0},
+                {"range": "1-3",  "count": 0},
+                {"range": "4-6",  "count": 0},
+                {"range": "7-9",  "count": 0},
+                {"range": "10+",  "count": 0},
             ],
         }
 
-    # Favorite side & confidence
-    pick_home = db.query(func.count()).filter(
-        models.Prediction.match_id == match_id,
-        models.Prediction.margin >= 1,
-        models.Prediction.pick == "home"
-    ).scalar()
+    pick_home = (
+        db.query(func.count())
+        .select_from(models.Prediction)
+        .join(models.User, models.User.id == models.Prediction.user_id)
+        .filter(
+            models.Prediction.match_id == match_id,
+            models.Prediction.margin >= 1,
+            models.Prediction.pick == "home",
+            or_(models.User.is_bot == False, models.User.is_bot.is_(None)),
+        )
+        .scalar()
+    )
+    pick_away = total - (pick_home or 0)
 
-    pick_away = total - pick_home
-
-    if pick_home > pick_away:
+    if (pick_home or 0) > pick_away:
         favorite = "home"
-        confidence_pct = round(pick_home / total * 100, 1)
-    elif pick_away > pick_home:
+        confidence_pct = round((pick_home or 0) / total * 100, 1)
+    elif pick_away > (pick_home or 0):
         favorite = "away"
         confidence_pct = round(pick_away / total * 100, 1)
     else:
         favorite = None
         confidence_pct = 50.0
 
-    # Weighted averages
-    avg_margin_val = db.query(func.avg(signed_margin)).filter(
-        models.Prediction.match_id == match_id,
-        models.Prediction.margin >= 1
-    ).scalar()
+    avg_margin_val = (
+        db.query(func.avg(signed_margin))
+        .select_from(models.Prediction)
+        .join(models.User, models.User.id == models.Prediction.user_id)
+        .filter(*base_filters)
+        .scalar()
+    )
     avg_signed_margin = round(float(avg_margin_val), 2) if avg_margin_val is not None else None
 
-    median_signed_margin = db.query(
-        func.percentile_cont(0.5).within_group(signed_margin)
-    ).filter(
-        models.Prediction.match_id == match_id,
-        models.Prediction.margin >= 1
-    ).scalar()
+    median_signed_margin = (
+        db.query(func.percentile_cont(0.5).within_group(signed_margin))
+        .select_from(models.Prediction)
+        .join(models.User, models.User.id == models.Prediction.user_id)
+        .filter(*base_filters)
+        .scalar()
+    )
 
-    # Histogram (negative for away, positive for home)
     bucket_expr = case(
         (signed_margin <= -10, "-10-"),
         (signed_margin.between(-9, -7), "-9--7"),
         (signed_margin.between(-6, -4), "-6--4"),
         (signed_margin.between(-3, -1), "-3--1"),
-        (signed_margin.between(1, 3), "1-3"),
-        (signed_margin.between(4, 6), "4-6"),
-        (signed_margin.between(7, 9), "7-9"),
-        else_="10+"
+        (signed_margin.between(1, 3),   "1-3"),
+        (signed_margin.between(4, 6),   "4-6"),
+        (signed_margin.between(7, 9),   "7-9"),
+        else_="10+",
     ).label("rng")
 
-    rows = db.query(bucket_expr, func.count().label("count")).filter(
-        models.Prediction.match_id == match_id,
-        models.Prediction.margin >= 1
-    ).group_by(bucket_expr).all()
+    rows = (
+        db.query(bucket_expr, func.count().label("count"))
+        .select_from(models.Prediction)
+        .join(models.User, models.User.id == models.Prediction.user_id)
+        .filter(*base_filters)
+        .group_by(bucket_expr)
+        .all()
+    )
 
     buckets = {"-10-": 0, "-9--7": 0, "-6--4": 0, "-3--1": 0, "1-3": 0, "4-6": 0, "7-9": 0, "10+": 0}
     for r in rows:
@@ -321,17 +289,24 @@ def get_match_stats(match_id: int, db: Session = Depends(get_db)):
     return {
         "match_id": match_id,
         "total": total,
-        "home_pick": pick_home,
-        "away_pick":pick_away,
+        "home_pick": int(pick_home or 0),
+        "away_pick": int(pick_away or 0),
         "favorite": favorite,
         "confidence_pct": confidence_pct,
-        "avg_signed_margin": avg_signed_margin,
+        "avg_signed_margin": median_signed_margin if avg_signed_margin is None else avg_signed_margin,
         "median_signed_margin": median_signed_margin,
         "margin_histogram": histogram,
     }
     
     
-@router.get("/predictions/preview/{match_id}")
+def _human_only_filters(match_id: int):
+    return [
+        models.Prediction.match_id == match_id,
+        models.Prediction.margin >= 1,
+        or_(models.User.is_bot == False, models.User.is_bot.is_(None)),
+    ]
+      
+@router.get("/preview/{match_id}")
 def preview_my_prediction(match_id: int, db: Session = Depends(get_db), me: dict = Depends(get_current_user)):
     m = db.get(models.Match, match_id)
     user_id = me["id"]
@@ -344,74 +319,3 @@ def preview_my_prediction(match_id: int, db: Session = Depends(get_db), me: dict
     return {"match_id": match_id, "preview_points": pts}
 
 
-#Simpler, less effective, if the above doesn't work O(1) vs O(N)
-# @router.get("/predictions/by-match/{match_id}")
-# def get_match_stats_py(match_id: int, db: Session = Depends(get_db)):
-#     preds = (
-#         db.query(models.Prediction)
-#         .filter(models.Prediction.match_id == match_id, models.Prediction.margin >= 1)
-#         .all()
-#     )
-#     if not preds:
-#         return {
-#             "match_id": match_id,
-#             "total": 0,
-#             "pick_home": 0,
-#             "pick_away": 0,
-#             "favorite": None,
-#             "confidence_pct": None,
-#             "avg_margin": None,
-#             "median_margin": None,
-#             "avg_points": 0,
-#             "margin_histogram": [
-#                 {"range":"1-3","count":0},
-#                 {"range":"4-6","count":0},
-#                 {"range":"7-9","count":0},
-#                 {"range":"10+","count":0},
-#             ],
-#         }
-
-#     total = len(preds)
-#     pick_home = sum(1 for p in preds if p.pick == "home")
-#     pick_away = total - pick_home
-
-#     if pick_home > pick_away:
-#         favorite = "home"
-#         confidence_pct = round(100 * pick_home / total, 1)
-#     elif pick_away > pick_home:
-#         favorite = "away"
-#         confidence_pct = round(100 * pick_away / total, 1)
-#     else:
-#         favorite = None
-#         confidence_pct = 50.0
-
-#     margins = [p.margin for p in preds]
-#     avg_margin = round(sum(margins) / total, 2)
-#     median_margin = median(margins)
-
-#     buckets = {"1-3": 0, "4-6": 0, "7-9": 0, "10+": 0}
-#     for m in margins:
-#         if 1 <= m <= 3:
-#             buckets["1-3"] += 1
-#         elif 4 <= m <= 6:
-#             buckets["4-6"] += 1
-#         elif 7 <= m <= 9:
-#             buckets["7-9"] += 1
-#         else:
-#             buckets["10+"] += 1
-#     histogram = [{"range": k, "count": buckets[k]} for k in ["1-3","4-6","7-9","10+"]]
-
-#     avg_points = round(sum(p.points_awarded for p in preds) / total, 2)
-
-#     return {
-#         "match_id": match_id,
-#         "total": total,
-#         "pick_home": pick_home,
-#         "pick_away": pick_away,
-#         "favorite": favorite,
-#         "confidence_pct": confidence_pct,
-#         "avg_margin": avg_margin,
-#         "median_margin": median_margin,
-#         "avg_points": avg_points,
-#         "margin_histogram": histogram,
-#     }

@@ -8,7 +8,7 @@ from ..db import models, schemas
 from .auth import get_current_user
 from ..core import database
 from ..core.constants import HTTPStatus, ErrorMessages
-
+from ..db.schemas import MyGroupOut
 
 
 router = APIRouter(prefix="/groups", tags=["groups"])
@@ -116,3 +116,54 @@ def kick_member(group_id: int, member_id: str, db: Session = Depends(get_db), me
     db.query(models.GroupMember).filter_by(group_id=group_id, user_id=member_id).delete()
     db.commit()
     return {"ok": True}
+
+@router.get("/my", response_model=List[MyGroupOut], summary="הקבוצות של המשתמש המחובר")
+def my_groups(
+    include_owned: bool = Query(True, description="להחזיר גם קבוצות שהמשתמש בעליהן"),
+    include_member: bool = Query(True, description="להחזיר גם קבוצות שהמשתמש חבר בהן"),
+    db: Session = Depends(get_db),
+    me: dict = Depends(get_current_user),
+):
+    if not include_owned and not include_member:
+        return []
+
+    uid = me["id"]
+
+    results: dict[int, MyGroupOut] = {}
+
+    if include_owned:
+        owned = db.query(models.Group).filter(models.Group.owner_id == uid).all()
+        for g in owned:
+            results[g.id] = MyGroupOut(
+                id=g.id,
+                name=g.name,
+                role="owner",
+                owner_id=g.owner_id,
+                is_private=bool(g.is_private),
+                invite_code=getattr(g, "invite_code", None),
+                created_at=getattr(g, "created_at", None),
+            )
+
+    if include_member:
+        rows = (
+            db.query(models.Group, models.GroupMember.role)
+              .join(models.GroupMember, models.GroupMember.group_id == models.Group.id)
+              .filter(models.GroupMember.user_id == uid)
+              .all()
+        )
+        for g, role in rows:
+            if g.id in results and results[g.id].role == "owner":
+                continue
+            results[g.id] = MyGroupOut(
+                id=g.id,
+                name=g.name,
+                role=role or "member",
+                owner_id=g.owner_id,
+                is_private=bool(g.is_private),
+                invite_code=getattr(g, "invite_code", None),
+                created_at=getattr(g, "created_at", None),
+            )
+
+    out = list(results.values())
+    out.sort(key=lambda x: (x.name or "").lower())
+    return out

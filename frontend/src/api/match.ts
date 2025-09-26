@@ -1,6 +1,6 @@
 import { getJSON } from "./client";
 
-export type TeamSummary = { ppg: number; apg: number; rpg: number; games: number };
+export type TeamSummary = { ppg: number; apg: number; rpg: number; games: number, spg:number, bpg:number, tpm:number };
 export type LeaderRow = { player_id: number; player: string; value: number };
 export type Leaders = {
   pts: LeaderRow | null;
